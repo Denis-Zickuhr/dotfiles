@@ -1,0 +1,10 @@
+git config --global alias.att '!f() {
+  b=$(git rev-parse --abbrev-ref HEAD);
+  prefix=$(echo "$b" | grep -oE "^[A-Za-z]+-[0-9]+");  # Permite qualquer prefixo, como "MAG", "ABC", etc.
+
+  if [ -n "$prefix" ]; then
+    echo "https://zorders.atlassian.net/browse/$prefix";
+  else
+    echo "Prefixo da branch não encontrado (mag-xxxx ou outro).";
+  fi;
+}; f'

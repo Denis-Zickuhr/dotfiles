@@ -1,0 +1,28 @@
+git config --global alias.info '!f() {
+  verbose="false";
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -v|--verbose)
+        verbose="true";
+        shift
+        ;;
+      *)
+        echo "Uso: git info [-v|--verbose]";
+        return 1
+        ;;
+    esac
+  done
+
+  if [ "$verbose" = "true" ]; then
+    echo "Atividade";
+  fi
+  git att;
+  echo "";
+
+  if [ "$verbose" = "true" ]; then
+    echo "Pull Request";
+  fi
+  git pr;
+}; f'
+

@@ -1,0 +1,56 @@
+git config --global alias.flip '!f() {
+  show_help() {
+    echo "Usage: git flip [--help|-h] [--clear|-c] [--set|-s <branch>]";
+    echo "Flip between current branch and main branch (auto-detected).";
+    echo "";
+    echo "  --help, -h     Show this help message";
+    echo "  --clear, -c    Clear the stored branch reference";
+    echo "  --set, -s      Manually set the branch to flip back to";
+  }
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --help|-h)
+        show_help;
+        exit 0;
+        ;;
+      --clear|-c)
+        git config --global --unset git-flip.prevBranch;
+        echo "Previous branch cleared.";
+        exit 0;
+        ;;
+      --set|-s)
+        shift;
+        if [ -z "$1" ]; then
+          echo "Error: No branch name provided with --set/-s.";
+          exit 1;
+        fi
+        git config --global git-flip.prevBranch "$1";
+        echo "Stored flip branch set to '$1'.";
+        exit 0;
+        ;;
+      *)
+        echo "Unknown option: $1";
+        show_help;
+        exit 1;
+        ;;
+    esac
+  done
+
+  current_branch=$(git rev-parse --abbrev-ref HEAD);
+  main_branch=$(git rev-parse --abbrev-ref origin/HEAD | sed "s|origin/||");
+  stored_branch=$(git config --global git-flip.prevBranch || echo "");
+
+  if [ "$current_branch" != "$main_branch" ]; then
+    git config --global git-flip.prevBranch "$current_branch";
+    git checkout "$main_branch";
+    echo "Switched to main branch ($main_branch)";
+  elif [ -n "$stored_branch" ]; then
+    git checkout "$stored_branch";
+    echo "Switched back to previous branch ($stored_branch)";
+    git config --global --unset git-flip.prevBranch;
+  else
+    echo "No previous branch stored. Nothing to flip to.";
+  fi
+}; f'
+

@@ -1,0 +1,1 @@
+git config --global alias.fp '!git fetch && git pull'

@@ -1,0 +1,59 @@
+git config --global alias.pr '!f() {
+  base="";
+  list_all="false";
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -b)
+        base="$2";
+        shift 2
+        ;;
+      -a|--all)
+        list_all="true";
+        shift
+        ;;
+      *)
+        echo "Uso: git pr [-a|--all] [-b <base_branch>]";
+        return 1
+        ;;
+    esac
+  done
+
+  if [ "$list_all" = "true" ]; then
+    echo "Listando todos os PRs do seu usuário:";
+    gh pr list --author "@me" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\"";
+    return 0;
+  fi
+
+  b=$(git rev-parse --abbrev-ref HEAD);
+  prs=$(gh pr list --head "$b" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\"");
+
+  if [ -n "$prs" ]; then
+    echo "$prs";
+    open_prs=$(gh pr list --head "$b" --state open --json number --jq ". | length");
+    if [ "$open_prs" -eq 0 ]; then
+      echo "";
+      echo "Nenhum PR aberto. Criar novo PR:";
+      if [ -z "$base" ]; then
+        default_branch=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name);
+      else
+        default_branch="$base";
+      fi;
+      remote_url=$(git config --get remote.origin.url);
+      repo_path=$(echo "$remote_url" | sed -E "s#(git@github.com:|https://github.com/)([^.]+)(.git)?#\2#");
+      echo "https://github.com/$repo_path/compare/$default_branch...$b?expand=1";
+    fi;
+  else
+    echo "Nenhum pull request encontrado para a branch $b";
+    echo "Criar novo pull request?";
+    if [ -z "$base" ]; then
+      default_branch=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name);
+    else
+      default_branch="$base";
+    fi;
+    remote_url=$(git config --get remote.origin.url);
+    repo_path=$(echo "$remote_url" | sed -E "s#(git@github.com:|https://github.com/)([^.]+)(.git)?#\2#");
+    echo "https://github.com/$repo_path/compare/$default_branch...$b?expand=1";
+  fi;
+}; f'
+

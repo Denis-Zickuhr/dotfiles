@@ -1,0 +1,5 @@
+git config --global alias.fresh '!f(){
+    git_alias_o_branch=$(git rev-parse --abbrev-ref origin/HEAD | sed "s|origin/||");
+    git checkout "$git_alias_o_branch" && git fetch && git pull;
+    echo "Switched to main branch and pulled latest changes.";
+}; f'

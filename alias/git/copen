@@ -1,0 +1,9 @@
+git config --global alias.copen '!f() { \
+    tool=$(git config --get alias.copen.editor || echo phpstorm); \
+    files=$(git status --porcelain | awk '\''$1 ~ /[AM]/ || $2 ~ /[AM]/ {print $2}'\''); \
+    if [ -z "$files" ]; then \
+        echo "No modified or new files to open."; \
+        return 0; \
+    fi; \
+    echo "$files" | xargs "$tool"; \
+}; f'
