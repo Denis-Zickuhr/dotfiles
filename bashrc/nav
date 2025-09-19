@@ -1,0 +1,142 @@
+nav() {
+    local NAVM_CONFIG_FILE="$HOME/.navm_aliases"
+
+    touch "$NAVM_CONFIG_FILE"
+
+    if [[ $# -eq 0 ]]; then
+        nav help
+        return 0
+    fi
+
+
+    case "$1" in
+        set)
+            if [ "$2" == "--alias" ] && [ -n "$3" ]; then
+                local alias="$3"
+                local path
+
+                if [ "$4" == "--path" ] && [ -n "$5" ]; then
+                    path=$(realpath "$5")
+                elif [ -z "$4" ]; then
+                    path=$(pwd)
+                else
+                    echo "Usage: navm set --alias <alias_name> [--path <directory_path>]" >&2
+                    return 1
+                fi
+
+                if [ ! -d "$path" ]; then
+                    echo "Error: Path '$path' does not exist or is not a directory." >&2
+                    return 1
+                fi
+
+                if grep -q "^${alias}=" "$NAVM_CONFIG_FILE"; then
+                    sed -i "s|^${alias}=.*|${alias}=${path}|" "$NAVM_CONFIG_FILE"
+                    echo "Updated alias '${alias}' to '${path}'."
+                else
+                    echo "${alias}=${path}" >> "$NAVM_CONFIG_FILE"
+                    echo "Set alias '${alias}' to '${path}'."
+                fi
+            else
+                echo "Usage: nav set --alias <alias_name> [--path <directory_path>]" >&2
+                return 1
+            fi
+            ;;
+
+        unset)
+            if [ -z "$2" ]; then
+                echo "Usage: navm unset <alias_name>" >&2
+                return 1
+            fi
+            local alias_to_unset="$2"
+            if grep -q "^${alias_to_unset}=" "$NAVM_CONFIG_FILE"; then
+                sed -i "/^${alias_to_unset}=/d" "$NAVM_CONFIG_FILE"
+                echo "Unset alias '${alias_to_unset}'."
+            else
+                echo "Error: Alias '${alias_to_unset}' not found." >&2
+                return 1
+            fi
+            ;;
+
+        list)
+            if [ -s "$NAVM_CONFIG_FILE" ]; then
+                echo "Defined Aliases:"
+                column -t -s '=' "$NAVM_CONFIG_FILE"
+            else
+                echo "No aliases defined yet."
+            fi
+            ;;
+
+        export)
+            local filename="navm_export_$(date +%Y-%m-%d).conf"
+            if [ "$2" == "--name" ] && [ -n "$3" ]; then
+                filename="$3"
+            fi
+
+            cp "$NAVM_CONFIG_FILE" "$filename"
+            echo "Configuration exported to '$(pwd)/${filename}'."
+            ;;
+
+        import)
+            if [ -z "$2" ] || [ ! -f "$2" ]; then
+                echo "Usage: nav import <path/to/file>" >&2
+                echo "Error: File not found." >&2
+                return 1
+            fi
+
+            local import_file="$2"
+            local imported_count=0
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                [[ -z "$line" || "$line" == \#* ]] && continue
+
+                local alias=$(echo "$line" | cut -d'=' -f1)
+                local path=$(echo "$line" | cut -d'=' -f2-)
+                
+                if [ -n "$alias" ] && [ -n "$path" ]; then
+                    if grep -q "^${alias}=" "$NAVM_CONFIG_FILE"; then
+                        sed -i "s|^${alias}=.*|${alias}=${path}|" "$NAVM_CONFIG_FILE"
+                    else
+                        echo "${alias}=${path}" >> "$NAVM_CONFIG_FILE"
+                    fi
+                    imported_count=$((imported_count + 1))
+                fi
+            done < "$import_file"
+            echo "Import complete. ${imported_count} aliases processed."
+            ;;
+
+        help|--help|-h)
+            echo "nav: A simple navigation manager"
+            echo "-----------------------------------"
+            echo "Usage: nav <command> [options]"
+            echo
+            echo "Commands:"
+            echo "  nav <alias>                     Navigate to the path defined by the alias."
+            echo "  nav set --alias a [--path p]    Set or update an alias 'a' to a path 'p'."
+            echo "  nav unset <alias>               Remove an alias."
+            echo "  nav list                        List all defined aliases."
+            echo "  nav import <file>               Import aliases from a text file."
+            echo "  nav export [--name file]        Export aliases to a file (default: navm_export_DATE.conf)."
+            echo "  nav help                        Show this help message."
+            ;;
+
+        *)
+            ;;
+    esac
+
+    if [ $# -eq 1 ] && [ "$1" != "list" ] && [ "$1" != "help" ] && [ "$1" != "export" ]; then
+        local alias_to_go="$1"
+        local path_to_go=$(grep "^${alias_to_go}=" "$NAVM_CONFIG_FILE" | cut -d'=' -f2-)
+
+        if [ -z "$path_to_go" ]; then
+            echo "Error: Alias '${alias_to_go}' not found." >&2
+            if [ "$1" != "set" ] && [ "$1" != "unset" ] && [ "$1" != "import" ]; then
+                 nav help
+            fi
+            return 1
+        elif [ -d "$path_to_go" ]; then
+            cd "$path_to_go"
+        else
+            echo "Error: The path for '${alias_to_go}' ('${path_to_go}') no longer exists." >&2
+            return 1
+        fi
+    fi
+}
