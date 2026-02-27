@@ -1,0 +1,232 @@
+#!/bin/bash
+
+read -r -d '' SCRIPT_CONTENT << 'EOF'
+    # --- Config ---
+    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m";
+    
+    SOURCE_BRANCH=""
+    TARGET_BRANCHES_RAW=""
+    TARGET_BRANCHES=()
+    SELECTED_COMMITS=()
+    CREATED_BRANCHES=()
+    START_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+    # --- Helpers ---
+    show_help() {
+        cat <<-MSG
+Usage: git hotfix -f <source> -i <target1,target2>
+
+Automates hotfix creation and PR generation.
+
+    -f, --from <source>     (Required) The source branch containing commits.
+    -i, --into <targets>    (Required) Comma-separated list of target branches.
+    -h, --help              Display this help message.
+
+Example:
+    git hotfix -f feat/login-fix -i develop,staging
+MSG
+        exit 0
+    }
+
+    log() { echo -e "${CYAN}[INFO]${NC} $1"; }
+    error() { echo -e "${RED}[ERROR]${NC} $1"; }
+    
+    # --- Rollback ---
+    rollback() {
+        echo -e "\n${YELLOW}Aborted. Rolling back changes...${NC}";
+        if [[ -n "$START_BRANCH" ]]; then git checkout "$START_BRANCH" &> /dev/null; fi
+        for b in "${CREATED_BRANCHES[@]}"; do
+            log "Deleting local branch: $b"
+            git branch -D "$b" &> /dev/null
+        done
+        echo -e "${GREEN}Rollback complete. You are back on ${START_BRANCH}.${NC}"
+        exit 1
+    }
+
+    # --- Validation ---
+    validate_inputs() {
+        # 1. Check for missing arguments
+        if [[ -z "$SOURCE_BRANCH" || -z "$TARGET_BRANCHES_RAW" ]]; then
+            error "Missing parameters."
+            show_help
+        fi
+
+        # 2. Normalize: Replace ALL commas with spaces
+        local CLEAN_LIST="${TARGET_BRANCHES_RAW//,/ }"
+        
+        # 3. Reset array and Loop to deduplicate
+        TARGET_BRANCHES=()
+        for branch in $CLEAN_LIST; do
+            # Skip empty strings
+            if [[ -z "$branch" ]]; then continue; fi
+
+            # Deduplication: Check if already added
+            local exists=0
+            for existing in "${TARGET_BRANCHES[@]}"; do
+                if [[ "$existing" == "$branch" ]]; then 
+                    exists=1
+                    break
+                fi
+            done
+
+            # Add only if unique
+            if [[ $exists -eq 0 ]]; then
+                TARGET_BRANCHES+=("$branch")
+            fi
+        done
+
+        # 4. Ensure we actually have targets
+        if [[ ${#TARGET_BRANCHES[@]} -eq 0 ]]; then
+            error "No valid target branches found."
+            exit 1
+        fi
+
+        # 5. Git Validations
+        if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+            error "Not a git repo."
+            exit 1
+        fi
+        
+        if ! git show-ref --verify --quiet "refs/heads/$SOURCE_BRANCH"; then
+            if ! git show-ref --verify --quiet "refs/remotes/origin/$SOURCE_BRANCH"; then
+                error "Source '$SOURCE_BRANCH' not found."
+                exit 1
+            fi
+        fi
+    }
+
+    # --- Commits ---
+    select_commits() {
+        # Use the first target branch as the baseline to filter commits
+        BASELINE="${TARGET_BRANCHES[0]}"
+        
+        echo -e "\n${YELLOW}--- Select Commits ---${NC}"
+        echo -e "Showing commits in ${GREEN}$SOURCE_BRANCH${NC} that are NOT in ${GREEN}$BASELINE${NC}:"
+        
+        COMMITS_LIST=()
+        i=0
+        
+        # We use $BASELINE..$SOURCE_BRANCH to get only unique commits
+        # If the list is empty, it means source is fully merged or equal to baseline
+        while IFS= read -r line; do
+            COMMITS_LIST+=("$line")
+            ((i++))
+        done < <(git log "$BASELINE..$SOURCE_BRANCH" --oneline --no-merges)
+
+        if [ ${#COMMITS_LIST[@]} -eq 0 ]; then 
+            error "No unique commits found in '$SOURCE_BRANCH' compared to '$BASELINE'."
+            echo "Tip: Ensure your source branch has commits ahead of $BASELINE."
+            exit 1
+        fi
+
+        for idx in "${!COMMITS_LIST[@]}"; do
+            printf "%3d) %s\n" $((idx+1)) "${COMMITS_LIST[$idx]}"
+        done
+
+        echo ""
+        read -p "Enter numbers (space separated, oldest first): " SELECTION
+        if [[ -z "$SELECTION" ]]; then error "None selected."; exit 1; fi
+
+        for num in $SELECTION; do
+            if ! [[ "$num" =~ ^[0-9]+$ ]]; then error "Invalid: $num"; exit 1; fi
+            idx=$((num-1))
+            if [ -z "${COMMITS_LIST[$idx]}" ]; then error "Out of range: $num"; exit 1; fi
+            RAW="${COMMITS_LIST[$idx]}"
+            HASH=$(echo "$RAW" | awk '{print $1}')
+            MSG=$(echo "$RAW" | cut -d' ' -f2-)
+            SELECTED_COMMITS+=("$HASH|$MSG")
+        done
+    }
+
+    # --- Link Gen ---
+    generate_pr_link() {
+        local base=$1; local head=$2
+        local remote=$(git remote get-url origin)
+        if [[ "$remote" == git@* ]]; then
+            remote=${remote//:/\/}; remote=${remote//git@/https:\/\/}
+        fi
+        remote=${remote%.git}
+        echo "$remote/compare/$base...$head?expand=1"
+    }
+
+    # --- Parse Args ---
+    while [[ "$#" -gt 0 ]]; do
+        case $1 in
+            --from|-f) SOURCE_BRANCH="$2"; shift ;;
+            --into|-i) 
+                TARGET_BRANCHES_RAW="$2"
+                shift
+                while [[ "$#" -gt 0 && ! "$1" =~ ^- ]]; do
+                    TARGET_BRANCHES_RAW="${TARGET_BRANCHES_RAW} $1"
+                    shift
+                done
+                ;;
+            -h|--help) show_help ;;
+            *) error "Unknown: $1"; show_help ;;
+        esac
+        shift
+    done
+
+    validate_inputs
+    select_commits
+
+    echo -e "\n${YELLOW}--- Review Before Pushing ---${NC}"
+    echo -e "Source:    ${GREEN}$SOURCE_BRANCH${NC}"
+    echo -e "Targets:   ${GREEN}${TARGET_BRANCHES[*]}${NC}"
+    echo -e "Commits:   ${GREEN}${#SELECTED_COMMITS[@]}${NC}"
+    echo "----------------------------"
+    
+    read -p "Proceed? (y/yes to confirm): " CONFIRM
+    LOWER_CONFIRM=$(echo "$CONFIRM" | tr "[:upper:]" "[:lower:]")
+    if [ "$LOWER_CONFIRM" != "y" ] && [ "$LOWER_CONFIRM" != "yes" ]; then
+        rollback
+    fi
+
+    echo -e "\n${GREEN}Confirmed. Processing...${NC}"
+
+    PR_LINKS=()
+
+    for into in "${TARGET_BRANCHES[@]}"; do
+        log "Processing target: $into"
+
+        if ! git checkout "$into" 2>/dev/null; then error "Checkout $into failed"; rollback; fi
+        if ! git pull origin "$into" --rebase 2>/dev/null; then error "Pull $into failed"; rollback; fi
+
+        SAFE_SRC=${SOURCE_BRANCH//\//-}
+        HOTFIX_B="hotfix-${into}-${SAFE_SRC}"
+        
+        if git show-ref --verify --quiet "refs/heads/$HOTFIX_B"; then
+            git branch -D "$HOTFIX_B" &> /dev/null
+        fi
+
+        if ! git checkout -b "$HOTFIX_B"; then error "Branch failed"; rollback; fi
+        CREATED_BRANCHES+=("$HOTFIX_B")
+
+        for item in "${SELECTED_COMMITS[@]}"; do
+            IFS='|' read -r hash msg <<< "$item"
+            if ! git cherry-pick "$hash"; then
+                error "Conflict on $hash."
+                git cherry-pick --abort &> /dev/null
+                rollback
+            fi
+        done
+
+        log "Pushing $HOTFIX_B..."
+        if ! git push -u origin "$HOTFIX_B"; then error "Push failed"; rollback; fi
+        
+        LINK=$(generate_pr_link "$into" "$HOTFIX_B")
+        PR_LINKS+=("Target [$into]: $LINK")
+    done
+
+    echo -e "\n${GREEN}=== Operation Completed ===${NC}"
+    if [[ -n "$START_BRANCH" ]]; then git checkout "$START_BRANCH" &> /dev/null; fi
+    
+    echo "Create your Pull Requests here:"
+    for link in "${PR_LINKS[@]}"; do echo -e "  $link"; done
+EOF
+
+ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
+
+git config --global alias.hotfix "!f() { 
+    bash -c '$ESCAPED_CODE' -- \"\$@\"
+}; f"
