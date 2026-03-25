@@ -12,6 +12,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     SOURCE_BRANCH=""
     TARGET_BRANCHES_RAW=""
     FORCE_PUSH=false
+    PICKY=false
     TARGET_BRANCHES=()
     SELECTED_COMMITS=()
     CREATED_BRANCHES=()
@@ -27,6 +28,7 @@ Automates hotfix creation and PR generation.
     -f, --from <source>     (Required) The source branch containing commits.
     -i, --into <targets>    (Required) Comma-separated|Space list of target branches.
     --force                 Force pushes the branch creation over origin.
+    -p, --picky             Allows the commits to be individually picked.
     -h, --help              Display this help message.
 
 Example:
@@ -83,6 +85,9 @@ MSG
                   --force)
                       FORCE_PUSH=true
                       ;;
+                  --picky|-p)
+                      PICKY=true
+                      ;;
                   --into|-i)
                       TARGET_BRANCHES_RAW="$2"
                       shift
@@ -134,43 +139,31 @@ MSG
     }
 
     select_commits() {
-        # Lets use the first passed target as the compare upstream
         UPSTREAM="origin/${TARGET_BRANCHES[0]}"
+        COMMITS_RAW=()
+        while IFS= read -r line; do COMMITS_RAW+=("$line"); done < <(git cherry -v "$UPSTREAM" "$SOURCE_BRANCH" | grep '^+' | sed 's/^+ //')
 
-        echo -e "\n${YELLOW}--- Select Commits ---${NC}"
-        echo -e "Showing commits in ${GREEN}$SOURCE_BRANCH${NC} that are NOT in ${GREEN}$UPSTREAM${NC}:"
-
-        COMMITS_LIST=()
-        i=0
-
-        while IFS= read -r line; do
-            COMMITS_LIST+=("$line")
-            ((i++))
-        done < <(git cherry -v "$UPSTREAM" "$SOURCE_BRANCH" | grep '^+' | sed 's/^+ //')
-
-        if [ ${#COMMITS_LIST[@]} -eq 0 ]; then
-            error "No unique commits found in '$SOURCE_BRANCH' compared to '$UPSTREAM'."
-            echo "Tip: Ensure your source branch has commits ahead of $UPSTREAM."
-            exit 1
+        if [ ${#COMMITS_RAW[@]} -eq 0 ]; then
+            error "No unique commits found."; exit 1
         fi
 
-        for idx in "${!COMMITS_LIST[@]}"; do
-            printf "%3d) %s\n" $((idx+1)) "${COMMITS_LIST[$idx]}"
-        done
-
-        echo ""
-        read -p "Enter numbers (space separated, oldest first): " SELECTION
-        if [[ -z "$SELECTION" ]]; then error "None selected."; exit 1; fi
-
-        for num in $SELECTION; do
-            if ! [[ "$num" =~ ^[0-9]+$ ]]; then error "Invalid: $num"; exit 1; fi
-            idx=$((num-1))
-            if [ -z "${COMMITS_LIST[$idx]}" ]; then error "Out of range: $num"; exit 1; fi
-            RAW="${COMMITS_LIST[$idx]}"
-            HASH=$(echo "$RAW" | awk '{print $1}')
-            MSG=$(echo "$RAW" | cut -d' ' -f2-)
-            SELECTED_COMMITS+=("$HASH|$MSG")
-        done
+        if [[ "$PICKY" == true ]]; then
+            echo -e "\n${YELLOW}--- Select Commits ---${NC}"
+            for idx in "${!COMMITS_RAW[@]}"; do printf "%3d) %s\n" $((idx+1)) "${COMMITS_RAW[$idx]}"; done
+            echo ""
+            read -p "Enter numbers (space separated, oldest first): " SELECTION
+            [[ -z "$SELECTION" ]] && { error "None selected."; exit 1; }
+            for num in $SELECTION; do
+                idx=$((num-1))
+                RAW="${COMMITS_RAW[$idx]}"
+                SELECTED_COMMITS+=("$(echo "$RAW" | awk '{print $1}')|$(echo "$RAW" | cut -d' ' -f2-)")
+            done
+        else
+            log "Auto-collecting ${#COMMITS_RAW[@]} commits..."
+            for line in "${COMMITS_RAW[@]}"; do
+                SELECTED_COMMITS+=("$(echo "$line" | awk '{print $1}')|$(echo "$line" | cut -d' ' -f2-)")
+            done
+        fi
     }
 
     generate_pr_link() {
@@ -274,7 +267,9 @@ MSG
     parse_args "$@"
     validate_inputs
     select_commits
-    review_and_confirm
+    if [[ "$PICKY" == true ]]; then
+      review_and_confirm
+    fi
     process_hotfix_targets
     finish_execution
 EOF
