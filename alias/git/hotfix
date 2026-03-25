@@ -86,6 +86,11 @@ MSG
                   --into|-i)
                       TARGET_BRANCHES_RAW="$2"
                       shift
+
+                      while [[ "$#" -gt 1 && ! "$2" =~ ^- ]]; do
+                          TARGET_BRANCHES_RAW="${TARGET_BRANCHES_RAW} $2"
+                          shift
+                      done
                       ;;
                   -h|--help)
                       show_help
