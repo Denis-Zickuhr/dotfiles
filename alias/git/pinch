@@ -1,0 +1,26 @@
+git config --global alias.pinch '!f(){ \
+    editor=$(git config core.editor); \
+    keep=false; \
+    while [ $# -gt 0 ]; do \
+        case "$1" in \
+            -e|--editor) editor="$2"; shift ;; \
+            -k|--keep) keep=true ;; \
+            *) break ;; \
+        esac; \
+        shift; \
+    done; \
+    upstream=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||"); \
+    remote=$(git rev-parse --abbrev-ref @{u} 2>/dev/null); \
+    merge_base=$(git merge-base origin/$upstream HEAD 2>/dev/null); \
+    files=$(git diff --name-only $merge_base..HEAD 2>/dev/null | grep -vE "^(vendor/|node_modules/|public/storage/|composer.lock|package-lock.json)"); \
+    if [ -z "$files" ]; then \
+        echo "No changes detected relative to $upstream."; \
+        return 0; \
+    fi; \
+    echo "Pinching files changed since diverged from $upstream..."; \
+    echo "$files" | xargs $editor & \
+    if [ "$keep" = true ]; then \
+        git reset --soft $merge_base > /dev/null 2>&1; \
+        return 0; \
+    fi; \
+}; f'
