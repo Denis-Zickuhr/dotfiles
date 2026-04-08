@@ -1,74 +1,91 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; NC="\033[0m";
+    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m";
 
     show_help() {
         cat <<-MSG
 Usage: git marry -b <branch-name> [-p <pattern>] [-f]
 
-Combines stashing, updating, creating a new branch, popping, adding, committing, and pushing.
-
-    -b, --branch <name>     (Required) The name of the new branch.
-    -p, --pattern <path>    (Optional) Path to add. Can be used multiple times. Defaults to "src".
-    -f, --force             (Optional) Force push without confirmation.
-    -h, --help              Display this help message.
-
-Prerequisites: requires "git fresh", "git cbn", and "git bn".
+    -b, --branch <name>     New branch name
+    -p, --pattern <path>    File patterns to add (defaults to "src")
+    -f, --force             Push without confirmation
+    -h, --help              Show help
 MSG
-    };
+    }
+
+    fail() {
+        local current_br=$(git rev-parse --abbrev-ref HEAD)
+        echo -e "${RED}Error detected. Cleaning up...${NC}"
+
+        git reset --mixed >/dev/null 2>&1
+        git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
+
+        if [ "$current_br" != "$ORIGINAL_BRANCH" ]; then
+            git branch -D "$current_br" >/dev/null 2>&1
+        fi
+
+        git stash pop >/dev/null 2>&1
+        return 1
+    }
+
+    marry() {
+        git stash push -u -m "marry_temp_stash" || return 1
+        git fresh || return 1
+        git checkout -b "$BRANCH_NAME" || return 1
+
+        if ! git stash pop; then
+            fail
+            return 1
+        fi
+
+        for pattern in $ADD_PATTERNS; do
+            git add "$pattern"
+        done
+
+        if ! git cbn; then
+            fail
+            return 1
+        fi
+
+        local commit_msg=$(git log -1 --pretty=%B)
+        local files=$(git diff --name-only HEAD~1)
+
+        if [ "$FORCE_PUSH" = true ]; then
+            git push -u origin "$BRANCH_NAME"
+        else
+            echo -e "\n${YELLOW}--- Review ---${NC}"
+            echo -e "Branch: ${GREEN}$BRANCH_NAME${NC}"
+            echo -e "Commit: ${GREEN}$commit_msg${NC}"
+            echo -e "Files:\n${CYAN}$files${NC}"
+
+            read -p "Push to origin? (y/n): " confirm
+            if [[ "$confirm" =~ ^[Yy](es)?$ ]]; then
+                git push -u origin "$BRANCH_NAME"
+            else
+                fail
+            fi
+        fi
+    }
 
     BRANCH_NAME=""; ADD_PATTERNS=""; FORCE_PUSH=false;
+    ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
     while [ "$#" -gt 0 ]; do
         case $1 in
             -h|--help) show_help; return 0;;
             -b|--branch) BRANCH_NAME="$2"; shift;;
             -p|--pattern) ADD_PATTERNS="$ADD_PATTERNS $2"; shift;;
             -f|--force) FORCE_PUSH=true;;
-            *) echo "Unknown parameter: $1"; show_help; return 1;;
-        esac;
-        shift;
-    done;
+            *) shift;;
+        esac
+        shift
+    done
 
-    if [ -z "$BRANCH_NAME" ]; then echo "Error: Branch name is required."; show_help; return 1; fi;
-    if [ -z "$ADD_PATTERNS" ]; then ADD_PATTERNS="src"; fi;
+    [ -z "$BRANCH_NAME" ] && { echo "Branch name required"; return 1; }
+    [ -z "$ADD_PATTERNS" ] && ADD_PATTERNS="src"
 
-    ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-
-    # main flow
-    { git stash && git fresh && git checkout -b "$BRANCH_NAME" && git stash pop && git add $ADD_PATTERNS && git cbn; };
-    if [ $? -ne 0 ]; then echo -e "${YELLOW}A command failed. Aborting before confirmation.${NC}"; return 1; fi;
-
-    COMMIT_MSG=$(git log -1 --pretty=%B)
-    # pegar os arquivos do último commit
-    COMMITTED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD)
-    CURRENT_BRANCH=$(git bn)
-
-    if [ "$FORCE_PUSH" = true ]; then
-        echo -e "\n${YELLOW}--force flag detected. Pushing without confirmation.${NC}";
-        git push -u origin "$CURRENT_BRANCH";
-    else
-        echo -e "\n${YELLOW}--- Review Before Pushing ---${NC}";
-        echo -e "Branch:   ${GREEN}$CURRENT_BRANCH${NC}";
-        echo -e "Commit:   ${GREEN}$COMMIT_MSG${NC}";
-        echo -e "Files to be pushed:\n${CYAN}$COMMITTED_FILES${NC}";
-        echo "----------------------------";
-        read -p "Push this branch to origin? (y/yes to confirm): " CONFIRM;
-        LOWER_CONFIRM=$(echo "$CONFIRM" | tr "[:upper:]" "[:lower:]")
-        if [ "$LOWER_CONFIRM" = "y" ] || [ "$LOWER_CONFIRM" = "yes" ]; then
-            echo -e "\n${GREEN}Confirmed. Pushing to origin...${NC}";
-            git push -u origin "$CURRENT_BRANCH";
-        else
-            echo -e "\n${YELLOW}Aborted. Rolling back changes...${NC}";
-            # rollback: desfaz commit, volta pra branch original e deleta a nova
-            git reset --soft HEAD~1
-            git checkout "$ORIGINAL_BRANCH"
-            git branch -D "$CURRENT_BRANCH"
-            # git stash pop >/dev/null 2>&1 || true
-            git reset $ADD_PATTERNS
-            echo -e "${GREEN}Rollback complete. You are back on ${ORIGINAL_BRANCH}.${NC}"
-        fi;
-    fi;
+    marry
 EOF
 )
 
