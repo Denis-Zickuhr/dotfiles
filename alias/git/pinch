@@ -2,7 +2,7 @@
 
 SCRIPT_CONTENT=$(cat <<'EOF'
 
-    editor=$(git config core.editor);
+    editor=$(git config core.editor | sed 's/ --wait//g');
     upstream=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||");
     upstream=${upstream:-main}
     remote=$(git rev-parse --abbrev-ref @{u} 2>/dev/null);
