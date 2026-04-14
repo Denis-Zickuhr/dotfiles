@@ -1,5 +1,5 @@
 git config --global alias.copen '!f(){ \
-    tool=$(git config core.editor); \
+    tool=$(git config core.editor | sed 's/ --wait//g'); \
     while [ $# -gt 0 ]; do \
         case "$1" in \
             -e|--editor) tool="$2"; shift ;; \
