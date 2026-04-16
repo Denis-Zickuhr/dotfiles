@@ -5,14 +5,19 @@ set -e
 
 GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m";
 
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo -e "${RED}Error: You are not in a git repository.${NC}"
+    exit 1
+fi
+
 get_quiver() {
-    git config --get-all quiver.branch || echo ""
+    git config --local --get-all quiver.branch || echo ""
 }
 
 save_quiver() {
-    git config --unset-all quiver.branch || true
+    git config --local --unset-all quiver.branch || true
     for branch in "$@"; do
-        git config --add quiver.branch "$branch"
+        git config --local --add quiver.branch "$branch"
     done
 }
 
@@ -71,7 +76,7 @@ quiver() {
     read -p "Select an index (or press 'q' to quit): " choice
 
     if [[ "$choice" =~ ^[0-9]+$ ]]; then
-        git quiver $choice
+        switch_to "$choice"
     fi
 }
 
@@ -113,7 +118,20 @@ remove_branch() {
 reorder_branch() {
     local target=$(git branch --show-current)
     local pos=$1
-    remove_branch "$target"
+    local branches=($(get_quiver))
+    local target_idx=""
+
+    for i in "${!branches[@]}"; do
+        if [ "${branches[$i]}" == "$target" ]; then
+            target_idx=$i
+            break
+        fi
+    done
+
+    if [ -n "$target_idx" ]; then
+        remove_branch "$target_idx"
+    fi
+
     add_branch "$target" "$pos"
 }
 
@@ -123,7 +141,7 @@ switch_to() {
     local target=${branches[$((idx-1))]}
 
     if [ -z "$target" ]; then
-        echo "Error: Invalid index"
+        echo -e "${RED}Error: Invalid index${NC}"
         exit 1
     fi
 
@@ -153,9 +171,9 @@ empty_quiver() {
         fi
     done
 
-    git config --unset-all quiver.branch || true
+    git config --local --unset-all quiver.branch || true
     if [ -n "$keep" ]; then
-        git config --add quiver.branch "$keep"
+        git config --local --add quiver.branch "$keep"
     fi
 }
 
@@ -173,7 +191,9 @@ main() {
             ;;
         -r|--remove)
             local branch=""
-            if [[ -n "$2" && "$2" != -* ]]; then branch="$2"; fi
+            if [[ -n "$2" && "$2" =~ ^[0-9]+$ ]]; then
+                branch=$(($2 - 1))
+            fi
             remove_branch "$branch"
             ;;
         -t|--top)
@@ -192,7 +212,6 @@ main() {
             branch=$(git rev-parse --abbrev-ref origin/HEAD | sed "s|origin/||");
             if [ "$branch" == "" ]; then
                 branch="main"
-                break
             fi
 
             manage_stash_push
@@ -203,7 +222,7 @@ main() {
             if [[ "$1" =~ ^[0-9]+$ ]]; then
                 switch_to "$1"
             else
-                echo "Error: Unknown argument $1"
+                echo -e "${RED}Error: Unknown argument $1${NC}"
                 exit 1
             fi
             ;;
