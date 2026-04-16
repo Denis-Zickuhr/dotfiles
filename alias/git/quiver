@@ -1,0 +1,221 @@
+#!/bin/bash
+
+SCRIPT_CONTENT=$(cat <<'EOF'
+set -e
+
+GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m";
+
+get_quiver() {
+    git config --get-all quiver.branch || echo ""
+}
+
+save_quiver() {
+    git config --unset-all quiver.branch || true
+    for branch in "$@"; do
+        git config --add quiver.branch "$branch"
+    done
+}
+
+get_current_stash_name() {
+    local branch=$1
+    local hash=$(git rev-parse --short HEAD)
+    echo "$hash-quiver-stash-$branch"
+}
+
+manage_stash_push() {
+    local branch=$(git branch --show-current)
+    if [ -n "$(git status --porcelain)" ]; then
+        local msg=$(get_current_stash_name "$branch")
+        git stash push -m "$msg" > /dev/null
+    fi
+}
+
+manage_stash_pop() {
+    local branch=$1
+    local msg=$(get_current_stash_name "$branch")
+    local stash_id=$(git stash list | grep "$msg" | cut -d: -f1 | head -n 1 || true)
+    if [ -n "$stash_id" ]; then
+        git stash pop "$stash_id" > /dev/null
+    fi
+}
+
+help() {
+    echo "Usage: git quiver [index | flags]"
+    echo "Flags:"
+    echo "  -h, --help           Shows help page"
+    echo "  -a, --add [branch]   Add branch to quiver"
+    echo "  -r, --remove [index] Remove branch from quiver"
+    echo "  -t, --top            Move to top"
+    echo "  -b, --bottom         Move to bottom"
+    echo "  -e, --empty          Empty quiver"
+    echo "  -f, --fresh          Goes back to project main branch"
+    echo ""
+}
+
+quiver() {
+    local branches=($(get_quiver))
+    local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    local i=1
+
+    for b in "${branches[@]}"; do
+        if [ "$current" == "$b" ]; then
+            echo -e "${GREEN}  $i) $b${NC}"
+        else
+            echo "  $i) $b"
+        fi
+        i=$((i+1))
+    done
+
+    local choice
+    echo ""
+    read -p "Select an index (or press 'q' to quit): " choice
+
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+        git quiver $choice
+    fi
+}
+
+add_branch() {
+    local target=${1:-$(git branch --show-current)}
+    local pos=$2
+    local branches=($(get_quiver))
+
+    for b in "${branches[@]}"; do
+        if [ "$b" == "$target" ]; then return; fi
+    done
+
+    if [ "$pos" == "top" ]; then
+        save_quiver "$target" "${branches[@]}"
+    else
+        save_quiver "${branches[@]}" "$target"
+    fi
+}
+
+remove_branch() {
+    local target_index=$1
+    local branches=($(get_quiver))
+
+    if [[ -z "$target_index" ]] || [[ ! "$target_index" =~ ^[0-9]+$ ]]; then
+        echo "Error: Please provide a valid numeric index to remove."
+        return 1
+    fi
+
+    if [[ -z "${branches[$target_index]}" ]]; then
+        echo "Error: Index $target_index does not exist in the quiver."
+        return 1
+    fi
+
+    unset "branches[$target_index]"
+
+    save_quiver "${branches[@]}"
+}
+
+reorder_branch() {
+    local target=$(git branch --show-current)
+    local pos=$1
+    remove_branch "$target"
+    add_branch "$target" "$pos"
+}
+
+switch_to() {
+    local idx=$1
+    local branches=($(get_quiver))
+    local target=${branches[$((idx-1))]}
+
+    if [ -z "$target" ]; then
+        echo "Error: Invalid index"
+        exit 1
+    fi
+
+    local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [ "$current" == "$target" ]; then
+        echo -e "already on ${GREEN}$target ${NC}"
+        exit 0
+    fi
+
+    manage_stash_push
+    git checkout "$target" > /dev/null 2>&1;
+    git fetch > /dev/null 2>&1;
+    git pull > /dev/null 2>&1;
+    echo "Switched to branch $target"
+    manage_stash_pop "$target"
+}
+
+empty_quiver() {
+    local current=$(git branch --show-current)
+    local branches=($(get_quiver))
+    local keep=""
+
+    for b in "${branches[@]}"; do
+        if [ "$b" == "$current" ]; then
+            keep="$b"
+            break
+        fi
+    done
+
+    git config --unset-all quiver.branch || true
+    if [ -n "$keep" ]; then
+        git config --add quiver.branch "$keep"
+    fi
+}
+
+main() {
+    if [ $# -eq 0 ]; then
+        quiver
+        exit 0
+    fi
+
+    case "$1" in
+        -a|--add)
+            local branch=""
+            if [[ -n "$2" && "$2" != -* ]]; then branch="$2"; fi
+            add_branch "$branch" "normal"
+            ;;
+        -r|--remove)
+            local branch=""
+            if [[ -n "$2" && "$2" != -* ]]; then branch="$2"; fi
+            remove_branch "$branch"
+            ;;
+        -t|--top)
+            reorder_branch "top"
+            ;;
+        -b|--bottom)
+            reorder_branch "bottom"
+            ;;
+        -e|--empty)
+            empty_quiver
+            ;;
+        -h|--help)
+            help
+            ;;
+        -f|--fresh)
+            branch=$(git rev-parse --abbrev-ref origin/HEAD | sed "s|origin/||");
+            if [ "$branch" == "" ]; then
+                branch="main"
+                break
+            fi
+
+            manage_stash_push
+            git checkout "$branch"
+            manage_stash_pop "$branch"
+            ;;
+        *)
+            if [[ "$1" =~ ^[0-9]+$ ]]; then
+                switch_to "$1"
+            else
+                echo "Error: Unknown argument $1"
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+main "$@"
+EOF
+)
+
+ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
+
+git config --global alias.quiver "!f() {
+    bash -c '$ESCAPED_CODE' -- \"\$@\"
+}; f"
