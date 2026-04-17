@@ -53,6 +53,9 @@ MSG
 
         if [ "$FORCE_PUSH" = true ]; then
             git push -u origin "$BRANCH_NAME"
+            if git config --get alias.quiver > /dev/null 2>&1; then
+                git quiver -a "$BRANCH_NAME"
+            fi
         else
             echo -e "\n${YELLOW}--- Review ---${NC}"
             echo -e "Branch: ${GREEN}$BRANCH_NAME${NC}"
@@ -62,6 +65,9 @@ MSG
             read -p "Push to origin? (y/n): " confirm
             if [[ "$confirm" =~ ^[Yy](es)?$ ]]; then
                 git push -u origin "$BRANCH_NAME"
+                if git config --get alias.quiver > /dev/null 2>&1; then
+                  git quiver -a "$BRANCH_NAME"
+                fi
             else
                 fail
             fi
