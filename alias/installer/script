@@ -1,0 +1,168 @@
+#!/bin/bash
+
+USER="Denis-Zickuhr"
+REPO="dotfiles"
+PATH_GIT="alias/git"
+API_URL="https://api.github.com/repos/$USER/$REPO/contents/$PATH_GIT"
+RAW_URL="https://raw.githubusercontent.com/$USER/$REPO/main/$PATH_GIT"
+
+C_RESET='\033[0m'
+C_BOLD='\033[1m'
+C_GREEN='\033[32m'
+C_RED='\033[31m'
+C_YELLOW='\033[33m'
+C_CYAN='\033[36m'
+C_REVERSE='\033[7m'
+C_GRAY='\033[90m'
+
+check_dependencies() {
+    for cmd in curl git; do
+        command -v "$cmd" &> /dev/null || { echo -e "${C_RED}error:${C_RESET} $cmd is not installed."; exit 1; }
+    done
+}
+
+get_metadata() {
+    echo -ne "${C_CYAN}fetching extensions metadata...${C_RESET} "
+
+    local response=$(curl -s "$API_URL")
+    ALL_FILES=$(echo "$response" | grep '"name":' | sed -E 's/.*"name": "(.*)".*/\1/')
+
+    mapfile -t ALIASES < <(echo "$ALL_FILES" | grep -v "\.doc\.md$")
+
+    if [ ${#ALIASES[@]} -eq 0 ]; then
+        echo -e "${C_RED}error:${C_RESET} no extensions found."; exit 1
+    fi
+
+    for i in "${!ALIASES[@]}"; do
+        local doc_name="${ALIASES[$i]}.doc.md"
+        if echo "$ALL_FILES" | grep -q "^$doc_name$"; then
+            HAS_DOC[$i]=true
+            DESCRIPTIONS[$i]=$(curl -sL --max-time 2 "$RAW_URL/$doc_name" | head -n 1 | sed 's/^# //')
+        else
+            HAS_DOC[$i]=false
+            DESCRIPTIONS[$i]=""
+        fi
+        echo -ne "${C_GREEN}.${C_RESET}"
+    done
+    echo -e " ${C_GREEN}done${C_RESET}"
+}
+
+get_help_content() {
+    local index=$1
+    local target="${ALIASES[$index]}"
+
+    if [ "${HAS_DOC[$index]}" = false ]; then
+        HELP_DATA="${C_RED}Error: Documentation file '$target.doc.md' not found on server.${C_RESET}"
+        return
+    fi
+
+    HELP_DATA=$(curl -sL -f "$RAW_URL/$target.doc.md")
+}
+
+render_ui() {
+    clear
+    echo -e "${C_BOLD}GIT EXTENSION MANAGER${C_RESET}"
+    echo -e "${C_GRAY}Arrows [↑/↓] | [Space] Mark | [A] All | [N] None | [H] Help | [Q] Quit | [Enter] Apply${C_RESET}\n"
+
+    for i in "${!ALIASES[@]}"; do
+        local check="[ ] "
+        local color=$C_RESET
+        [ "${selected[$i]}" -eq 1 ] && { check="[X] "; color=$C_GREEN; }
+
+        local quick_desc=""
+        [ -n "${DESCRIPTIONS[$i]}" ] && quick_desc=" ${C_GRAY}- ${DESCRIPTIONS[$i]}${C_RESET}"
+
+        if [ "$i" -eq "$cursor" ]; then
+            echo -e "${C_REVERSE} > $check${ALIASES[$i]}${C_RESET}${quick_desc}"
+            if [ "$help_active" = true ]; then
+                echo -e "     ${C_GRAY}┌──────────────────────────────────────────────────────────┐${C_RESET}"
+                while read -r line; do
+                    [ -z "$line" ] && continue
+                    echo -e "     ${C_GRAY}│${C_RESET} $(printf '%-56s' "${line:0:56}") ${C_GRAY}│${C_RESET}"
+                done <<< "$(echo "$HELP_DATA" | head -n 10)"
+                echo -e "     ${C_GRAY}└──────────────────────────────────────────────────────────┘${C_RESET}"
+            fi
+        else
+            echo -e "   $color$check${ALIASES[$i]}${C_RESET}${quick_desc}"
+        fi
+    done
+}
+
+handle_input() {
+    cursor=0
+    help_active=false
+    selected=()
+    for i in "${!ALIASES[@]}"; do selected[$i]=0; done
+
+    while true; do
+        render_ui
+        IFS= read -rsn1 key
+        case "$key" in
+            $'\x1b')
+                read -rsn2 -t 0.1 next
+                case "$next" in
+                    '[A') ((cursor--)); [ "$cursor" -lt 0 ] && cursor=$((${#ALIASES[@]} - 1)); help_active=false ;;
+                    '[B') ((cursor++)); [ "$cursor" -ge "${#ALIASES[@]}" ] && cursor=0; help_active=false ;;
+                esac
+                ;;
+            " ")
+                [ "${selected[$cursor]}" -eq 1 ] && selected[$cursor]=0 || selected[$cursor]=1
+                ;;
+            [aA]) for i in "${!selected[@]}"; do selected[$i]=1; done ;;
+            [nN]) for i in "${!selected[@]}"; do selected[$i]=0; done ;;
+            [qQ])
+              echo -e "\n${C_BOLD}installation aborted...${C_RESET}"
+              exit 0
+              ;;
+            [hH])
+                if [ "$help_active" = true ]; then
+                    help_active=false
+                else
+                    help_active=true
+                    get_help_content "$cursor"
+                fi
+                ;;
+            "") break ;;
+        esac
+    done
+}
+
+execute_tasks() {
+    local count=0
+    echo -e "\n${C_BOLD}starting installation...${C_RESET}"
+    for i in "${!ALIASES[@]}"; do
+        if [ "${selected[$i]}" -eq 1 ]; then
+            count=$((count+1))
+            local file="${ALIASES[$i]}"
+            local url="$RAW_URL/$file"
+            echo -ne "  installing ${C_CYAN}$file${C_RESET}... "
+
+            if [[ "$file" == *".alias.def" ]]; then
+                local key="${file%.alias.def}"
+                local cmd=$(curl -sL "$url")
+                if [ -n "$cmd" ]; then
+                    git config --global alias."$key" "$cmd"
+                    echo -e "${C_GREEN}done${C_RESET}"
+                else
+                    echo -e "${C_RED}failed${C_RESET}"
+                fi
+            else
+                if curl -sL "$url" | bash; then
+                    echo -e "${C_GREEN}done${C_RESET}"
+                else
+                    echo -e "${C_RED}failed${C_RESET}"
+                fi
+            fi
+        fi
+    done
+    [ $count -eq 0 ] && echo -e "${C_YELLOW}nothing selected.${C_RESET}" || echo -e "\n${C_GREEN}successfully installed $count extensions.${C_RESET}"
+}
+
+main() {
+    check_dependencies
+    get_metadata
+    handle_input
+    execute_tasks
+}
+
+main "$@"
