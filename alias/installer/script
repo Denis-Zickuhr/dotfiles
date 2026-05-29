@@ -1,5 +1,6 @@
 #!/bin/bash
 
+SCRIPT_CONTENT=$(cat <<'EOF'
 USER="Denis-Zickuhr"
 REPO="dotfiles"
 PATH_GIT="alias/git"
@@ -166,3 +167,11 @@ main() {
 }
 
 main "$@"
+EOF
+)
+
+ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
+
+git config --global alias.extension "!f() {
+    bash -c '$ESCAPED_CODE' -- \"\$@\"
+}; f"
