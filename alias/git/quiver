@@ -50,14 +50,12 @@ help() {
     echo "Usage: git quiver [index | flags]"
     echo "Flags:"
     echo "  -h, --help                Shows help page"
-    echo "  -a, --add [branch]        Add branch to quiver"
+    echo "  -a, --add [branch]        Add branch to quiver (current, if empty)"
     echo "  -r, --remove [index]      Remove branch from quiver"
-    echo "  -o, --origin              List branches from origin"
-    echo "  --filter [regexp]         Filter origin branches (used with -o)"
+    echo "  -f, --filter [regexp]     Filter origin branches"
     echo "  -t, --top                 Move current branch to top of quiver"
     echo "  -b, --bottom              Move current branch to bottom of quiver"
     echo "  -e, --empty               Empty quiver"
-    echo "  -f, --fresh               Goes back to project main branch"
     echo ""
 }
 
@@ -73,8 +71,7 @@ perform_switch() {
     fi
 
     manage_stash_push
-    
-    # Tenta checkout simples (local) ou com track (se existir apenas na origin)
+
     if ! git checkout "$target" > /dev/null 2>&1; then
         echo -e "${CYAN}Branch not found locally. Trying origin...${NC}"
         git checkout --track "origin/$target" > /dev/null 2>&1 || { echo -e "${RED}Error: Branch $target not found.${NC}"; return 1; }
@@ -83,7 +80,7 @@ perform_switch() {
     echo -e "${CYAN}Updating $target...${NC}"
     git fetch origin "$target" > /dev/null 2>&1 || true
     git pull origin "$target" > /dev/null 2>&1 || true
-    
+
     echo -e "Switched to branch ${GREEN}$target${NC}"
     manage_stash_pop "$target"
 }
@@ -93,12 +90,36 @@ quiver() {
     local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
     local i=1
 
-    if [ ${#branches[@]} -eq 0 ]; then
-        echo -e "${YELLOW}Quiver is empty. Use -a to add or -o to pick from origin.${NC}"
+    local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+    main_branch=${main_branch:-main}
+
+    if [ ${#branches[@]} -eq 0 ] && [ -z "$main_branch" ]; then
+        echo -e "${YELLOW}Quiver is empty. Use -a to add or -f to pick from origin.${NC}"
         return
     fi
 
+    local current_in_quiver=false
+    [ "$current" == "$main_branch" ] && current_in_quiver=true
     for b in "${branches[@]}"; do
+        if [ "$b" == "$current" ]; then
+            current_in_quiver=true
+            break
+        fi
+    done
+
+    if [ "$current" == "$main_branch" ]; then
+        echo -e "${GREEN}  f) $main_branch (default)${NC}"
+    else
+        echo "  f) $main_branch (default)"
+    fi
+
+    if [ "$current_in_quiver" = false ]; then
+        echo -e "${GREEN}     $current (current)${NC}"
+    fi
+
+    for b in "${branches[@]}"; do
+        [ "$b" == "$main_branch" ] && i=$((i+1)) && continue
+
         if [ "$current" == "$b" ]; then
             echo -e "${GREEN}  $i) $b${NC}"
         else
@@ -109,15 +130,28 @@ quiver() {
 
     local choice
     echo ""
-    read -p "Select an index (or 'q' to quit): " choice
+    local msg="Select an index (or 'q' to quit): "
+    if [ "$current_in_quiver" = false ]; then
+        msg="Select an index (or 'q' to quit or 'a' to add): "
+    fi
+    read -p "$msg" choice
 
-    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+    if [[ "$choice" =~ ^(a|A|add|ADD)$ ]]; then
+        local current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        add_branch "$current_branch" "normal"
+    elif [[ "$choice" =~ ^[fF]$ ]]; then
+        perform_switch "$main_branch"
+    elif [[ "$choice" =~ ^[0-9]+$ ]]; then
         local target=${branches[$((choice-1))]}
         if [ -n "$target" ]; then
             perform_switch "$target"
         else
             echo -e "${RED}Invalid index.${NC}"
         fi
+    elif [[ "$choice" =~ ^[qQ]$ ]]; then
+        return
+    else
+        echo -e "${RED}Invalid choice.${NC}"
     fi
 }
 
@@ -126,17 +160,12 @@ quiver_origin() {
     echo -e "${CYAN}Fetching branches from origin...${NC}"
     git fetch origin > /dev/null 2>&1
 
-    local remote_branches=($(git branch -r | grep "origin/" | grep -v "origin/HEAD" | sed 's|[[:space:]]*origin/||'))
-    local filtered=()
+    local filter_pattern="${regex:-.*}"
 
-    for b in "${remote_branches[@]}"; do
-        if [[ -z "$regex" ]] || [[ "$b" =~ $regex ]]; then
-            filtered+=("$b")
-        fi
-    done
+    local filtered=($(git branch -r --no-color | grep "origin/" | grep -v "origin/HEAD" | sed 's|[[:space:]]*origin/||' | grep -iE -e "$filter_pattern"))
 
     if [ ${#filtered[@]} -eq 0 ]; then
-        echo -e "${RED}No branches found matching the filter.${NC}"
+        echo -e "${RED}No branches found matching the filter: '$filter_pattern'${NC}"
         return
     fi
 
@@ -221,32 +250,28 @@ main() {
         -r|--remove)
             if [[ -n "$2" ]]; then remove_branch $(($2 - 1)); fi
             ;;
-        -o|--origin)
-            local regex=""
-            if [[ "$2" == "--filter" && -n "$3" ]]; then regex="$3"; fi
-            quiver_origin "$regex"
-            ;;
-        --filter)
+        -f|--filter)
             quiver_origin "$2"
             ;;
         -t|--top) reorder_branch "top" ;;
         -b|--bottom) reorder_branch "bottom" ;;
         -e|--empty) empty_quiver ;;
-        -h|--help) help ;;
-        -f|--fresh)
-            local branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
-            perform_switch "${branch:-main}"
-            ;;
+        -h|--help|help) help; exit 0 ;;
         *)
-            if [ $# -eq 0 ]; then quiver; exit 0; fi
-            if [[ "$1" =~ ^[0-9]+$ ]]; then
-                local branches=($(get_quiver))
-                perform_switch "${branches[$(($1-1))]}"
-            else
-                echo -e "${RED}Error: Unknown argument $1${NC}"
-                exit 1
-            fi
-            ;;
+          if [ $# -eq 0 ]; then quiver; exit 0; fi
+
+          if [[ "$1" =~ ^(f|F|fresh|FRESH)$ ]]; then
+              local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+              main_branch=${main_branch:-main}
+              perform_switch "$main_branch"
+          elif [[ "$1" =~ ^[0-9]+$ ]]; then
+              local branches=($(get_quiver))
+              perform_switch "${branches[$(($1-1))]}"
+          else
+              echo -e "${RED}Error: Unknown argument $1${NC}"
+              exit 1
+          fi
+          ;;
     esac
 }
 
