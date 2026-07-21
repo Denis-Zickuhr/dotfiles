@@ -55,7 +55,7 @@ help() {
     echo "  -f, --filter [regexp]     Filter origin branches"
     echo "  -t, --top                 Move current branch to top of quiver"
     echo "  -b, --bottom              Move current branch to bottom of quiver"
-    echo "  -m, --clean-merged        Remove merged/orphan branches from quiver"
+    echo "  -m, --clean-merged        Remove merged/orphan/unstaged branches from quiver"
     echo "  -e, --empty               Empty quiver"
     echo ""
 }
@@ -220,13 +220,8 @@ clean_merged_branches() {
     local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
     main_branch=${main_branch:-main}
 
-    echo -e "${CYAN}Fetching updates and pruning deleted remote branches...${NC}"
+    echo -e "${CYAN}Pruning remote branches and checking status...${NC}"
     git fetch origin --prune > /dev/null 2>&1 || true
-
-    local merged_list=$( {
-        git branch -a --merged 2>/dev/null
-        git branch -a --merged "origin/$main_branch" 2>/dev/null
-    } | tr -d ' *' | sed 's|remotes/origin/||' | sort -u )
 
     local branches=($(get_quiver))
     local kept_branches=()
@@ -241,16 +236,23 @@ clean_merged_branches() {
 
         local is_merged=false
 
-        if ! git rev-parse --verify "$b" >/dev/null 2>&1 && ! git rev-parse --verify "origin/$b" >/dev/null 2>&1; then
+        if git merge-base --is-ancestor "$b" "origin/$main_branch" 2>/dev/null || git merge-base --is-ancestor "$b" HEAD 2>/dev/null; then
             is_merged=true
-        elif echo "$merged_list" | grep -qw "$b"; then
+
+        elif [ "$(git cherry "origin/$main_branch" "$b" 2>/dev/null | grep -c '^+')" -eq 0 ] 2>/dev/null; then
             is_merged=true
-        elif git merge-base --is-ancestor "$b" HEAD >/dev/null 2>&1 || git merge-base --is-ancestor "$b" "origin/$main_branch" >/dev/null 2>&1; then
+
+        elif git config --get "branch.$b.remote" >/dev/null 2>&1 || git reflog show "origin/$b" >/dev/null 2>&1; then
+            if ! git rev-parse --verify "origin/$b" >/dev/null 2>&1; then
+                is_merged=true
+            fi
+
+        elif git log "origin/$main_branch" -n 100 --oneline 2>/dev/null | grep -qiE "($b|/#?$b\b)"; then
             is_merged=true
         fi
 
         if [ "$is_merged" = true ]; then
-            echo -e "${YELLOW}Removing merged/deleted branch from quiver: $b${NC}"
+            echo -e "${YELLOW}Removing merged/finished branch from quiver: $b${NC}"
             removed_count=$((removed_count + 1))
         else
             kept_branches+=("$b")
@@ -261,7 +263,7 @@ clean_merged_branches() {
     if [ $removed_count -eq 0 ]; then
         echo -e "${GREEN}No merged branches found in quiver.${NC}"
     else
-        echo -e "${GREEN}Removed $removed_count merged/stale branch(es) from quiver.${NC}"
+        echo -e "${GREEN}Removed $removed_count merged/finished branch(es) from quiver.${NC}"
     fi
 }
 
