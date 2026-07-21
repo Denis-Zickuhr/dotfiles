@@ -55,6 +55,7 @@ help() {
     echo "  -f, --filter [regexp]     Filter origin branches"
     echo "  -t, --top                 Move current branch to top of quiver"
     echo "  -b, --bottom              Move current branch to bottom of quiver"
+    echo "  -m, --clean-merged        Remove merged branches from quiver"
     echo "  -e, --empty               Empty quiver"
     echo ""
 }
@@ -123,7 +124,7 @@ quiver() {
         if [ "$current" == "$b" ]; then
             echo -e "${GREEN}  $i) $b${NC}"
         else
-            echo "  $i) $b"
+            echo "   $i) $b"
         fi
         i=$((i+1))
     done
@@ -215,6 +216,47 @@ remove_branch() {
     save_quiver "${branches[@]}"
 }
 
+clean_merged_branches() {
+    local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+    main_branch=${main_branch:-main}
+
+    echo -e "${CYAN}Fetching latest updates from origin...${NC}"
+    git fetch origin > /dev/null 2>&1 || true
+
+    local branches=($(get_quiver))
+    local kept_branches=()
+    local removed_count=0
+
+    for b in "${branches[@]}"; do
+        if [ "$b" == "$main_branch" ]; then
+            kept_branches+=("$b")
+            continue
+        fi
+
+        # Verifica se a branch local ou remota foi mergeada no HEAD de origin/main
+        local is_merged=false
+        if git merge-base --is-ancestor "$b" "origin/$main_branch" > /dev/null 2>&1; then
+            is_merged=true
+        elif git merge-base --is-ancestor "origin/$b" "origin/$main_branch" > /dev/null 2>&1; then
+            is_merged=true
+        fi
+
+        if [ "$is_merged" = true ]; then
+            echo -e "${YELLOW}Removing merged branch: $b${NC}"
+            removed_count=$((removed_count + 1))
+        else
+            kept_branches+=("$b")
+        fi
+    done
+
+    save_quiver "${kept_branches[@]}"
+    if [ $removed_count -eq 0 ]; then
+        echo -e "${GREEN}No merged branches found in quiver.${NC}"
+    else
+        echo -e "${GREEN}Removed $removed_count merged branch(es) from quiver.${NC}"
+    fi
+}
+
 reorder_branch() {
     local target=$(git branch --show-current)
     local pos=$1
@@ -255,6 +297,7 @@ main() {
             ;;
         -t|--top) reorder_branch "top" ;;
         -b|--bottom) reorder_branch "bottom" ;;
+        -m|--clean-merged) clean_merged_branches ;;
         -e|--empty) empty_quiver ;;
         -h|--help|help) help; exit 0 ;;
         *)
