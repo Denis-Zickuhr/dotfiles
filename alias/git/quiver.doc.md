@@ -18,16 +18,17 @@ $ git quiver -a [branch]     # Add a branch to your list
 ## Options
 -a, --add [branch]     Add a branch (defaults to current) to the list.
 -r, --remove [index]   Remove a branch from the list by its index.
--o, --origin           Fetch and list all remote branches to pick from.
---filter [regex]       Filter the origin list (e.g., --filter "feat/").
+-f, --filter [regex]   Filter origin branches (e.g., --filter "feat/").
 -t, --top              Move the current branch to the top of the list.
 -b, --bottom           Move the current branch to the bottom of the list.
--f, --fresh            Quickly jump back to the project's main branch.
+-m, --clean-merged     Remove merged branches from your quiver.
 -e, --empty            Clear all branches from your quiver.
+-h, --help             Shows help page.
 
 ## Workflow Example
 1. You are on `feat/ui`. Use `git quiver -a` to pin it.
-2. Need to fix a bug? `git quiver -o` -> pick `main`.
+2. Need to fix a bug? `git quiver -f` -> pick `main`.
 3. Your `ui` changes are automatically stashed.
 4. Finished bugfix? `git quiver 1` (to return to ui).
 5. Your `ui` changes are automatically restored exactly where you left off.
+6. Clean up finished work? `git quiver -m` removes merged branches automatically.
