@@ -1,31 +1,40 @@
-# Conventional commit automation based on branch name structure
+# git cbn — Generate commit messages from branch names using conventional commits
 
 ## Description
-This extension automates the 'git commit' process by parsing your current 
-branch name. It follows the Conventional Commits specification and 
-automatically extracts ticket prefixes (e.g., MAG-123) and commit types.
 
-## Branch Conventions
-The script expects one of the following patterns:
-1. [PREFIX]-[TYPE]-[DESCRIPTION] (e.g., MAG-123-feat-login-form)
-2. [TYPE]-[DESCRIPTION] (e.g., fix-header-spacing)
+Automatically generates a conventional commit message based on the current branch name. Extracts the commit type and description from the branch, and optionally includes a ticket prefix.
 
-Supported types: feat, fix, chore, docs, style, refactor, perf, test, build, ci, revert.
+Branch format: `[PREFIX-]<type>-<description>`
+
+Supported types: `feat`, `fix`, `chore`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `revert`
 
 ## Usage
-$ git cbn [options]
+
+```bash
+git cbn [options]
+```
 
 ## Options
--m, --message <msg>    Overrides the branch description with a custom message.
--op, --omit-prefix     Forces the removal of the ticket prefix from the commit.
--h, --help             Displays the internal help message.
 
-## Logic & Examples
-- Branch: `MAG-800-feat-api-auth`
-  Result: `git commit -m "MAG-800 - feat: api auth"`
+| Flag | Description |
+|------|-------------|
+| `-m`, `--message <msg>` | Provide a custom commit message body |
+| `-op`, `--omit-prefix` | Omit the prefix (e.g., ticket number) from the commit |
+| `-h`, `--help` | Show help message |
+| `-v`, `--version` | Show version |
 
-- Branch: `fix-broken-link`
-  Result: `git commit -m "fix: broken link"`
+## Examples
 
-- Command: `git cbn -m "initial work"` on branch `MAG-100-feat-ui`
-  Result: `git commit -m "MAG-100 - feat: initial work"`
+```bash
+# Branch: JIRA-123-feat-add-login → commit "JIRA-123 - feat: add login"
+git cbn
+
+# Branch: fix-broken-navbar → commit "fix: broken navbar"
+git cbn
+
+# Custom message body instead of branch description
+git cbn -m "implement OAuth2 flow"
+
+# Omit the ticket prefix from commit message
+git cbn --omit-prefix
+```

@@ -550,7 +550,7 @@ mode_self_update() {
     echo -e "  ${C_CYAN}Updating git extension manager...${C_RESET}"
     echo ""
 
-    local installer_url="$BASE_URL/alias/installer/script"
+    local installer_url="$BASE_URL/installer"
     local script_content=$(curl -sL "$installer_url")
 
     if [ -z "$script_content" ]; then

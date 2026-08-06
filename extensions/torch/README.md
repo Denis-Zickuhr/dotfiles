@@ -1,34 +1,40 @@
-# Massively deletes local branches and cleans up your workspace
+# git torch — Delete local branches that are no longer needed
 
 ## Description
-A "scorched earth" cleanup utility designed to purge stale local feature 
-branches. It automates the process of stashing pending work, deleting 
-non-essential branches, and synchronizing your local main branch with 
-the remote repository in a single command.
+
+Cleans up local branches by deleting all except protected ones (main, master, develop by default). Switches to the main branch, prunes remote references, and pulls the latest changes. Supports safe mode for confirmation before deletion and force mode for unmerged branches.
 
 ## Usage
-$ git torch [options]
+
+```bash
+git torch [options]
+```
 
 ## Options
--p, --pattern <regex>    Additional branch names to protect from deletion.
--s, --safe               Preview the list of branches and confirm before "torching".
--f, --force              Uses '-D' instead of '-d' to force delete unmerged branches.
--h, --help               Displays the command usage and flags.
 
-## Internal Logic
-1. **Safety First:** Automatically stashes any uncommitted changes to the index.
-2. **Protection:** By default, it refuses to delete `master`, `main`, or `develop`.
-3. **Detection:** Dynamically identifies your repository's primary branch via `origin/HEAD`.
-4. **Execution:** Iterates through all local branches that don't match the ignore patterns and attempts deletion.
-5. **Final Sync:** Switches to the main branch, prunes remote-tracking references (`fetch --prune`), and performs a `pull` to ensure you are up to date.
+| Flag | Description |
+|------|-------------|
+| `-p`, `--pattern <regex>` | Additional branches to protect (appended to default ignore list) |
+| `-s`, `--safe` | Confirm before deleting branches |
+| `-f`, `--force` | Force delete unmerged branches (uses `git branch -D`) |
+| `-h`, `--help` | Show help message |
+| `-v`, `--version` | Show version |
 
-## Example
-$ git torch --safe
-> Branches to be torched (12):
-> feat/old-ui
-> fix/bug-99
-> ...
-> Confirm? (y/yes to confirm): y
->
-> Torched 12 branches 🔥🔥🔥
-> You are now on main (updated).
+## Examples
+
+```bash
+# Delete all non-protected local branches
+git torch
+
+# Confirm before deleting
+git torch --safe
+
+# Force delete unmerged branches
+git torch -f
+
+# Protect additional branches from deletion
+git torch -p "release\|staging"
+
+# Combine safe mode with force
+git torch -s -f
+```

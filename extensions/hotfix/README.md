@@ -1,29 +1,38 @@
-# Automates multi-target hotfix creation and PR link generation
+# git hotfix — Automate hotfix creation and PR generation across multiple branches
 
 ## Description
-A high-level automation tool designed for applying fixes across multiple environments (e.g., `staging`, `production`, `develop`) simultaneously. It identifies unique commits from a source branch, cherry-picks them into fresh hotfix branches for each target, and provides direct links to open Pull Requests.
+
+Cherry-picks commits from a source branch into one or more target branches, creating dedicated hotfix branches and generating PR links. Includes a review step, conflict detection, and automatic rollback on failure.
 
 ## Usage
-$ git hotfix -f [source-branch] -i [target1,target2]
+
+```bash
+git hotfix -f <source> -i <target1,target2,...>
+```
 
 ## Options
--f, --from <source>    Source branch containing the commits (defaults to current).
--i, --into <targets>    Comma or space-separated list of target branches (e.g., "main,staging").
--p, --picky             Interactive mode: manually choose which commits to cherry-pick.
---force                 Force pushes the generated hotfix branches to origin.
--h, --help              Displays the command usage and examples.
 
-## Workflow
-1. **Selection:** Compares the source with the first target to find unique commits.
-2. **Interactive (Optional):** If `-p` is used, you select specific commits by number.
-3. **Execution:** For each target branch:
-   - Switches to target and pulls latest.
-   - Creates a new branch: `hotfix-[target]-[source]`.
-   - Cherry-picks the selected commits.
-   - Pushes to remote.
-4. **Cleanup:** Returns you to your original branch and displays PR links.
-5. **Rollback:** If a conflict or error occurs, it deletes the temporary local branches created during the process.
+| Flag | Description |
+|------|-------------|
+| `-f`, `--from <source>` | **(Required)** The source branch containing commits |
+| `-i`, `--into <targets>` | **(Required)** Comma-separated or space-separated list of target branches |
+| `--force` | Force push the hotfix branches to origin |
+| `-p`, `--picky` | Interactively select which commits to cherry-pick |
+| `-h`, `--help` | Show help message |
+| `-v`, `--version` | Show version |
 
-## Example
-$ git hotfix -f fix/login-error -i develop,staging,main
-> Automatically applies the login fix to all three environments and gives you the PR links.
+## Examples
+
+```bash
+# Cherry-pick all commits from feat/login-fix into develop and staging
+git hotfix -f feat/login-fix -i develop,staging
+
+# Interactively select which commits to apply
+git hotfix -f feat/login-fix -i develop,staging --picky
+
+# Force push hotfix branches
+git hotfix -f bugfix/critical -i release/1.0,main --force
+
+# Use current branch as source (omit -f)
+git hotfix -i develop,staging
+```

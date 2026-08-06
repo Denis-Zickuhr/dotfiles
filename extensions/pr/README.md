@@ -1,34 +1,35 @@
-# GitHub Pull Request management and status utility
+# git pr — List pull requests for the current branch or create new ones
 
 ## Description
-A productivity wrapper around the GitHub CLI (`gh`) to track, list, or initiate 
-Pull Requests directly from the terminal. It eliminates the friction of 
-navigating the web UI to find PR links or create new comparisons by 
-generating context-aware GitHub URLs.
+
+Shows pull requests associated with the current branch using the GitHub CLI (`gh`). If no PRs exist, generates a compare URL to create one. Can also list all PRs authored by you across the repository.
+
+Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be installed and authenticated.
 
 ## Usage
-$ git pr [options]
+
+```bash
+git pr [options]
+```
 
 ## Options
--a, --all             Lists all Pull Requests authored by you across the repository.
--b <base_branch>      Specifies a custom base branch for the PR comparison link.
--h, --help            (Internal bash logic)
 
-## Internal Logic
-1. **List Mode:** If `-a` is used, it queries all your PRs using JSON formatting.
-2. **Status Check:** Queries the GitHub API for any PRs matching the current branch.
-3. **Creation Fallback:** If no open PR is found for the current branch:
-   - It identifies the repository's default branch (via `gh repo view`).
-   - It parses the remote origin URL to determine the GitHub owner/repo path.
-   - It outputs a 'compare' URL for the web UI to quickly open a new PR.
+| Flag | Description |
+|------|-------------|
+| `-a`, `--all` | List all PRs authored by you |
+| `-b <branch>` | Specify base branch (defaults to repo default branch) |
+| `-h`, `--help` | Show help message |
+| `-v`, `--version` | Show version |
 
-## Requirements
-Requires the GitHub CLI (`gh`) to be installed and authenticated.
+## Examples
 
-## Example
-$ git pr
-> open: feat: add dashboard widgets -> https://github.com/user/repo/pull/42
+```bash
+# Show PRs for current branch (or a create link if none exist)
+git pr
 
-$ git pr -b staging
-> No open PR found. Create new:
-> https://github.com/user/repo/compare/staging...feat/my-branch?expand=1
+# List all your PRs in the repository
+git pr -a
+
+# Use a specific base branch for the compare URL
+git pr -b main
+```
