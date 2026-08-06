@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-VERSION="3.0.0"
+VERSION="1.0.0"
 USER="Denis-Zickuhr"
 REPO="dotfiles"
 BRANCH="main"
