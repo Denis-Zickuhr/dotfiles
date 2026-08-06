@@ -56,6 +56,21 @@
       "name": "pr",
       "version": "1.0.0",
       "description": "Show or create pull request for the current branch"
+    },
+    {
+      "name": "wip",
+      "version": "1.0.0",
+      "description": "Quick work-in-progress commits with easy undo"
+    },
+    {
+      "name": "sync",
+      "version": "1.0.0",
+      "description": "Sync current branch with upstream via rebase or merge"
+    },
+    {
+      "name": "standup",
+      "version": "1.0.0",
+      "description": "Show your recent commits for daily standups"
     }
   ]
 }

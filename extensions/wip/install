@@ -1,0 +1,81 @@
+#!/bin/bash
+
+SCRIPT_CONTENT=$(cat <<'EOF'
+#!/bin/bash
+
+VERSION="1.0.0"
+GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+
+show_help() {
+    echo -e "${CYAN}git wip${NC} — Quick WIP commits and management"
+    echo ""
+    echo "Usage: git wip [options]"
+    echo ""
+    echo "Options:"
+    echo "  (no args)      Stage everything and commit as \"WIP: <branch-name>\""
+    echo "  -m <msg>       Stage everything and commit as \"WIP: <msg>\""
+    echo "  --pop          Undo last commit if it is a WIP (reset --mixed)"
+    echo "  --list         List WIP commits on the current branch"
+    echo "  -h, --help     Show this help message"
+    echo "  -v, --version  Show version"
+}
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
+fi
+
+case "${1:-}" in
+    -h|--help) show_help; exit 0;;
+    -v|--version) echo "git wip v$VERSION"; exit 0;;
+    --pop)
+        LAST_MSG=$(git log -1 --pretty=%s 2>/dev/null)
+        if [[ "$LAST_MSG" != WIP:* ]]; then
+            echo -e "${RED}Error: Last commit is not a WIP commit.${NC}"
+            echo -e "  Last message: ${YELLOW}${LAST_MSG}${NC}"
+            exit 1
+        fi
+        git reset --mixed HEAD~ > /dev/null 2>&1
+        echo -e "${GREEN}✔ WIP commit undone.${NC} Changes returned to working tree."
+        ;;
+    --list)
+        WIPS=$(git log --oneline --grep="^WIP:" 2>/dev/null)
+        if [ -z "$WIPS" ]; then
+            echo -e "${YELLOW}No WIP commits found on this branch.${NC}"
+        else
+            echo -e "${CYAN}WIP commits on current branch:${NC}"
+            echo "$WIPS"
+        fi
+        ;;
+    -m)
+        if [ -z "${2:-}" ]; then
+            echo -e "${RED}Error: -m requires a message argument.${NC}"
+            exit 1
+        fi
+        MSG="WIP: $2"
+        git add -A
+        git commit -m "$MSG" --no-verify > /dev/null 2>&1
+        echo -e "${GREEN}✔ Committed:${NC} ${CYAN}${MSG}${NC}"
+        ;;
+    "")
+        BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        MSG="WIP: ${BRANCH}"
+        git add -A
+        git commit -m "$MSG" --no-verify > /dev/null 2>&1
+        echo -e "${GREEN}✔ Committed:${NC} ${CYAN}${MSG}${NC}"
+        ;;
+    *)
+        echo -e "${RED}Error: Unknown option '${1}'.${NC}"
+        echo "Run 'git wip --help' for usage."
+        exit 1
+        ;;
+esac
+EOF
+)
+
+ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
+
+git config --global alias.wip "!f() {
+    bash -c '$ESCAPED_CODE' -- \"\$@\"
+}; f"
+
+echo "✔ git wip alias installed."

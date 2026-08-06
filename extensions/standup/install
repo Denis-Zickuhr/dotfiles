@@ -1,0 +1,96 @@
+#!/bin/bash
+
+SCRIPT_CONTENT=$(cat <<'EOF'
+#!/bin/bash
+
+VERSION="1.0.0"
+GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+
+show_help() {
+    echo "Usage: git standup [options]"
+    echo ""
+    echo "Show commits from the last 24 hours (default) for the current user."
+    echo ""
+    echo "Options:"
+    echo "  --week       Show commits from the last 7 days"
+    echo "  --days N     Show commits from the last N days"
+    echo "  --all        Show commits from all authors"
+    echo "  -h, --help   Show this help message"
+    echo "  -v, --version Show version"
+}
+
+DAYS=1
+ALL_AUTHORS=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help) show_help; exit 0;;
+        -v|--version) echo "git standup v$VERSION"; exit 0;;
+        --week) DAYS=7; shift;;
+        --days) DAYS="$2"; shift 2;;
+        --all) ALL_AUTHORS=true; shift;;
+        *) echo -e "${RED}Error: Unknown option '$1'${NC}"; show_help; exit 1;;
+    esac
+done
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
+fi
+
+SINCE="$(date --date="$DAYS days ago" '+%Y-%m-%d' 2>/dev/null || date -v-${DAYS}d '+%Y-%m-%d')"
+
+if [[ "$ALL_AUTHORS" == "true" ]]; then
+    AUTHOR_FILTER=""
+else
+    AUTHOR_EMAIL=$(git config user.email)
+    if [[ -z "$AUTHOR_EMAIL" ]]; then
+        echo -e "${RED}Error: git user.email is not configured.${NC}"
+        exit 1
+    fi
+    AUTHOR_FILTER="--author=$AUTHOR_EMAIL"
+fi
+
+OUTPUT=$(git log --all --since="$SINCE" $AUTHOR_FILTER --format="%ad|%D|%s|%an" --date=short 2>/dev/null)
+
+if [[ -z "$OUTPUT" ]]; then
+    echo -e "${YELLOW}No commits found in the last $DAYS day(s).${NC}"
+    exit 0
+fi
+
+echo -e "${GREEN}Commits from the last $DAYS day(s):${NC}"
+echo ""
+
+CURRENT_DATE=""
+while IFS='|' read -r date refs message author; do
+    if [[ "$date" != "$CURRENT_DATE" ]]; then
+        CURRENT_DATE="$date"
+        echo -e "${GREEN}$date${NC}"
+    fi
+
+    branch=""
+    if [[ -n "$refs" ]]; then
+        branch=$(echo "$refs" | sed 's/HEAD -> //g' | awk -F', ' '{print $1}')
+    fi
+
+    if [[ -n "$branch" ]]; then
+        if [[ "$ALL_AUTHORS" == "true" ]]; then
+            echo -e "  ${CYAN}[$branch]${NC} $message ${YELLOW}($author)${NC}"
+        else
+            echo -e "  ${CYAN}[$branch]${NC} $message"
+        fi
+    else
+        if [[ "$ALL_AUTHORS" == "true" ]]; then
+            echo -e "  $message ${YELLOW}($author)${NC}"
+        else
+            echo -e "  $message"
+        fi
+    fi
+done <<< "$OUTPUT"
+EOF
+)
+
+ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
+
+git config --global alias.standup "!f() {
+    bash -c '$ESCAPED_CODE' -- \"\$@\"
+}; f"
