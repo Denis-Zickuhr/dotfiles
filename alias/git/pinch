@@ -1,46 +1,46 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.1.0"
+    VERSION="2.0.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
         echo -e "${CYAN}git pinch v$VERSION${NC}"
         echo ""
-        echo "Opens, edits, reverts, or amends files changed since the fork point."
+        echo "Open, edit, and ship files changed in the current branch."
         echo ""
         echo -e "${YELLOW}Usage:${NC}"
-        echo "  git pinch [options]"
+        echo "  git pinch              Open changed files in editor"
+        echo "  git pinch --pop        Pop commits (soft-reset) + open files for editing"
+        echo "  git pinch --ship       Ship: stage all, amend/commit, and push"
+        echo ""
+        echo -e "${YELLOW}Workflow:${NC}"
+        echo "  1. git pinch --pop     → Pops commits, opens files to edit"
+        echo "  2. (edit your files)"
+        echo "  3. git pinch --ship    → Commits changes and pushes to origin"
         echo ""
         echo -e "${YELLOW}Modes:${NC}"
-        echo "  (default)            Open changed files in editor"
-        echo "  -a, --amend          Edit mode: open files, then amend last commit with changes"
-        echo "  -r, --revert [file]  Revert files to upstream state (all if no file specified)"
-        echo "  -k, --keep           Soft-reset commits back to merge base"
+        echo "  (default)              Open changed files in editor (no git ops)"
+        echo "  -p, --pop              Soft-reset to merge base + open files for editing"
+        echo "  -s, --ship             Stage all + commit/amend + push"
+        echo "  -r, --revert [file]    Revert changed files to upstream state"
         echo ""
         echo -e "${YELLOW}Options:${NC}"
-        echo "  -e, --editor <ed>    Use specific editor (overrides auto-detection)"
-        echo "  -u, --upstream <br>  Upstream branch to diff against (default: auto-detect)"
-        echo "  -s, --select         Interactively select which files to open/revert/amend"
-        echo "  -h, --help           Show this help message"
-        echo "  -v, --version        Show version"
+        echo "  -e, --editor <ed>      Override editor"
+        echo "  -u, --upstream <b>     Override upstream branch"
+        echo "  -i, --interactive      Interactively select files"
+        echo "  -f, --force            Skip confirmations"
+        echo "  -h, --help             Show this help"
+        echo "  -v, --version          Show version"
         echo ""
         echo -e "${YELLOW}Editor resolution:${NC}"
         echo "  git config core.editor > \$EDITOR > code > vim"
-        echo ""
-        echo -e "${YELLOW}Examples:${NC}"
-        echo "  git pinch                    # open all changed files"
-        echo "  git pinch -a                 # edit files, amend into last commit"
-        echo "  git pinch -r                 # revert all files to upstream state"
-        echo "  git pinch -r src/file.ts     # revert specific file"
-        echo "  git pinch -s -a              # select files, edit, amend"
     }
 
     if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
         echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
     fi
 
-    # Resolve editor
     resolve_editor() {
         local ed=""
         ed=$(git config core.editor 2>/dev/null | sed 's/ --wait//g')
@@ -55,7 +55,11 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "$ed"
     }
 
-    # Get merge base
+    get_upstream() {
+        local default_upstream=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+        echo "${default_upstream:-main}"
+    }
+
     get_merge_base() {
         local upstream=$1
         local base=$(git merge-base "origin/$upstream" HEAD 2>/dev/null)
@@ -66,16 +70,13 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "$base"
     }
 
-    # Get changed files
     get_changed_files() {
         local merge_base=$1
         git diff --name-only "$merge_base..HEAD" 2>/dev/null | grep -vE "^(vendor/|node_modules/|public/storage/|composer.lock|package-lock.json)"
     }
 
-    # Interactive file selector
     select_files() {
         local all_files=$1
-        local selected=()
         local i=1
 
         echo -e "${CYAN}Select files (space-separated numbers, or 'a' for all):${NC}"
@@ -117,126 +118,180 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "$result"
     }
 
-    # --- Mode: Default (open files) ---
+    # --- Mode: Open (default) ---
     mode_open() {
         local files=$1 editor=$2
         echo -e "${CYAN}Opening ${GRAY}$(echo "$files" | wc -l | xargs)${CYAN} changed files...${NC}"
         echo "$files" | xargs -r -o $editor
     }
 
-    # --- Mode: Amend ---
-    mode_amend() {
-        local files=$1 editor=$2 merge_base=$3
+    # --- Mode: Keep (pop commits + open for editing) ---
+    mode_keep() {
+        local files=$1 editor=$2 merge_base=$3 upstream=$4 force=$5
 
         local commit_count=$(git rev-list --count "$merge_base..HEAD" 2>/dev/null)
         if [ "$commit_count" -eq 0 ]; then
-            echo -e "${RED}Error: No commits to amend (HEAD is at merge base).${NC}"
-            exit 1
+            echo -e "${YELLOW}No commits to pop (HEAD is at merge base).${NC}"
+            echo -e "${CYAN}Opening files anyway...${NC}"
+            echo "$files" | xargs -r -o $editor
+            return
         fi
 
-        local last_msg=$(git log -1 --pretty=%B)
-        echo -e "${CYAN}Amend mode:${NC} edit files, save, close editor → changes amend into last commit."
-        echo -e "${GRAY}Last commit: ${last_msg}${NC}"
+        local short_base=$(git rev-parse --short "$merge_base")
+
+        if [ "$force" != true ]; then
+            echo -e "${YELLOW}This will soft-reset $commit_count commit(s) back to $short_base.${NC}"
+            echo -e "${GRAY}Your changes stay in working tree for editing.${NC}"
+            printf "Continue? [Y/n] "
+            read -r answer < /dev/tty
+            case "$answer" in
+                [nN][oO]|[nN])
+                    echo -e "${YELLOW}Aborted.${NC}"
+                    exit 0
+                    ;;
+            esac
+        fi
+
+        git reset --soft "$merge_base" > /dev/null 2>&1
+        echo -e "${GREEN}✓ Popped $commit_count commit(s). Changes are staged.${NC}"
         echo ""
-
-        # Open editor and wait
+        echo -e "${CYAN}Opening files for editing...${NC}"
         echo "$files" | xargs -r -o $editor
+        echo ""
+        echo -e "${GRAY}When done, run ${NC}${GREEN}git pinch --ship${NC}${GRAY} to commit and push.${NC}"
+    }
 
-        # Check what changed
-        local changed=$(git status --porcelain 2>/dev/null | awk '{print $2}')
-        if [ -z "$changed" ]; then
-            echo -e "${YELLOW}No modifications detected. Nothing to amend.${NC}"
+    # --- Mode: Apply (commit + push) ---
+    mode_apply() {
+        local upstream=$1 force=$2
+
+        local branch=$(git rev-parse --abbrev-ref HEAD)
+
+        # Check if there are staged or unstaged changes
+        local has_staged=false
+        local has_unstaged=false
+        git diff --cached --quiet 2>/dev/null || has_staged=true
+        git diff --quiet 2>/dev/null || has_unstaged=true
+
+        if [ "$has_staged" = false ] && [ "$has_unstaged" = false ]; then
+            echo -e "${YELLOW}No changes to apply.${NC}"
             exit 0
         fi
 
-        echo ""
-        echo -e "${CYAN}Modified files:${NC}"
+        # Stage everything unstaged
+        if [ "$has_unstaged" = true ]; then
+            git add -u > /dev/null 2>&1
+        fi
+
+        # Show what will be committed
+        local changed=$(git diff --cached --name-only 2>/dev/null)
+        local count=$(echo "$changed" | wc -l | xargs)
+        echo -e "${CYAN}Applying $count file(s):${NC}"
         echo "$changed" | while IFS= read -r f; do
             echo -e "  ${GREEN}+${NC} $f"
         done
 
-        echo ""
-        printf "Amend these into the last commit? [Y/n] "
-        read -r answer < /dev/tty
+        # Determine commit strategy
+        local merge_base=$(git merge-base "origin/$upstream" HEAD 2>/dev/null)
+        local commit_count=$(git rev-list --count "$merge_base..HEAD" 2>/dev/null)
 
-        case "$answer" in
-            [nN][oO]|[nN])
-                echo -e "${YELLOW}Aborted. Files are modified but not committed.${NC}"
-                exit 0
-                ;;
-            *)
-                git add $changed
-                git commit --amend --no-edit > /dev/null 2>&1
-                echo -e "${GREEN}✓ Last commit amended with your changes.${NC}"
-                ;;
-        esac
+        if [ "$commit_count" -eq 0 ]; then
+            # No commits since merge base — need a commit message
+            echo ""
+            echo -e "${CYAN}No existing commit to amend. Creating new commit.${NC}"
+
+            # Try to generate message from branch name (like cbn)
+            local CT="feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert"
+            local commit_type=$(echo "$branch" | grep -oE "(${CT})" | head -n 1)
+
+            if [ -n "$commit_type" ]; then
+                local desc=$(echo "$branch" | sed -n "s/.*${commit_type}[-\/]//p" | sed 's/[-_]/ /g')
+                local suggested="${commit_type}: ${desc}"
+                echo -e "${GRAY}Suggested: ${suggested}${NC}"
+                printf "Commit message (enter to accept, or type new): "
+                read -r custom_msg < /dev/tty
+                local msg="${custom_msg:-$suggested}"
+            else
+                printf "Commit message: "
+                read -r msg < /dev/tty
+            fi
+
+            if [ -z "$msg" ]; then
+                echo -e "${RED}Error: Commit message required.${NC}"
+                exit 1
+            fi
+
+            git commit -m "$msg" > /dev/null 2>&1
+            echo -e "${GREEN}✓ Committed: $msg${NC}"
+        else
+            # Has commits — amend into existing
+            git commit --amend --no-edit > /dev/null 2>&1
+            local last_msg=$(git log -1 --pretty=%B | head -n 1)
+            echo -e "${GREEN}✓ Amended into: $last_msg${NC}"
+        fi
+
+        # Push
+        echo ""
+        if [ "$force" != true ]; then
+            printf "Push to origin/$branch? [Y/n] "
+            read -r answer < /dev/tty
+            case "$answer" in
+                [nN][oO]|[nN])
+                    echo -e "${YELLOW}Commit saved locally. Push manually when ready.${NC}"
+                    exit 0
+                    ;;
+            esac
+        fi
+
+        if git push --force-with-lease -u origin "$branch" > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Pushed to origin/$branch${NC}"
+        else
+            echo -e "${RED}Error: Push failed. Check remote status.${NC}"
+            exit 1
+        fi
     }
 
     # --- Mode: Revert ---
     mode_revert() {
-        local files=$1 merge_base=$2
+        local files=$1 merge_base=$2 force=$3
 
         local count=$(echo "$files" | wc -l | xargs)
-        echo -e "${YELLOW}This will revert $count file(s) to their state at origin/$UPSTREAM:${NC}"
+        echo -e "${YELLOW}Reverting $count file(s) to upstream state:${NC}"
         echo ""
         echo "$files" | while IFS= read -r f; do
             echo -e "  ${RED}↩${NC} $f"
         done
 
+        if [ "$force" != true ]; then
+            echo ""
+            printf "Continue? [y/N] "
+            read -r answer < /dev/tty
+            case "$answer" in
+                [yY][eE][sS]|[yY]) ;;
+                *)
+                    echo -e "${YELLOW}Aborted.${NC}"
+                    exit 0
+                    ;;
+            esac
+        fi
+
+        echo "$files" | while IFS= read -r f; do
+            if git checkout "$merge_base" -- "$f" 2>/dev/null; then
+                echo -e "  ${GREEN}✓${NC} $f"
+            else
+                echo -e "  ${RED}✗${NC} $f (not found at merge base)"
+            fi
+        done
         echo ""
-        printf "Continue? [y/N] "
-        read -r answer < /dev/tty
-
-        case "$answer" in
-            [yY][eE][sS]|[yY])
-                echo "$files" | while IFS= read -r f; do
-                    git checkout "$merge_base" -- "$f" 2>/dev/null
-                    if [ $? -eq 0 ]; then
-                        echo -e "  ${GREEN}✓${NC} $f"
-                    else
-                        echo -e "  ${RED}✗${NC} $f (not found at merge base)"
-                    fi
-                done
-                echo ""
-                echo -e "${GREEN}Files reverted. Changes are staged — commit when ready.${NC}"
-                ;;
-            *)
-                echo -e "${YELLOW}Aborted. No files were reverted.${NC}"
-                exit 0
-                ;;
-        esac
-    }
-
-    # --- Mode: Keep (soft reset) ---
-    mode_keep() {
-        local merge_base=$1
-        local short_base=$(git rev-parse --short "$merge_base")
-        local commit_count=$(git rev-list --count "$merge_base..HEAD" 2>/dev/null)
-
-        echo ""
-        echo -e "${YELLOW}Warning: This will soft-reset $commit_count commit(s) back to ${short_base}.${NC}"
-        echo -e "${GRAY}Your changes will remain staged (ready to re-commit).${NC}"
-        printf "Continue? [y/N] "
-        read -r answer < /dev/tty
-
-        case "$answer" in
-            [yY][eE][sS]|[yY])
-                git reset --soft "$merge_base" > /dev/null 2>&1
-                echo -e "${GREEN}✓ Commits squashed back to merge base. Changes are staged.${NC}"
-                ;;
-            *)
-                echo -e "${YELLOW}Aborted.${NC}"
-                exit 0
-                ;;
-        esac
+        echo -e "${GREEN}Files reverted. Changes are staged.${NC}"
     }
 
     # --- Parse args ---
-    default_upstream=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
-    UPSTREAM="${default_upstream:-main}"
+    UPSTREAM=$(get_upstream)
     EDITOR_OVERRIDE=""
     MODE="open"
     SELECT=false
+    FORCE=false
     REVERT_FILE=""
 
     while [ $# -gt 0 ]; do
@@ -245,16 +300,16 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             -v|--version)   echo "git pinch v$VERSION"; exit 0 ;;
             -e|--editor)    EDITOR_OVERRIDE="$2"; shift ;;
             -u|--upstream)  UPSTREAM="$2"; shift ;;
-            -a|--amend)     MODE="amend" ;;
+            -p|--pop)       MODE="keep" ;;
+            -s|--ship)      MODE="apply" ;;
             -r|--revert)
                 MODE="revert"
-                # Check if next arg is a file (not a flag)
                 if [ -n "$2" ] && [[ "$2" != -* ]]; then
                     REVERT_FILE="$2"; shift
                 fi
                 ;;
-            -k|--keep)      MODE="keep" ;;
-            -s|--select)    SELECT=true ;;
+            -i|--interactive) SELECT=true ;;
+            -f|--force)     FORCE=true ;;
             *)
                 echo -e "${RED}Unknown option: $1${NC}"
                 show_help; exit 1 ;;
@@ -262,26 +317,42 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         shift
     done
 
-    # Resolve editor (can be overridden)
+    # Resolve editor
     if [ -n "$EDITOR_OVERRIDE" ]; then
         FINAL_EDITOR="$EDITOR_OVERRIDE"
     else
         FINAL_EDITOR=$(resolve_editor)
     fi
 
-    # Get merge base and files
+    # Apply mode doesn't need merge base or file list upfront
+    if [ "$MODE" = "apply" ]; then
+        mode_apply "$UPSTREAM" "$FORCE"
+        exit 0
+    fi
+
+    # Get merge base and files for other modes
     merge_base=$(get_merge_base "$UPSTREAM")
     files=$(get_changed_files "$merge_base")
+
+    # Also include staged/unstaged files not yet committed (for after -k)
+    if [ "$MODE" = "open" ] || [ "$MODE" = "revert" ]; then
+        staged_files=$(git diff --cached --name-only 2>/dev/null | grep -vE "^(vendor/|node_modules/|public/storage/|composer.lock|package-lock.json)")
+        if [ -n "$staged_files" ] && [ -z "$files" ]; then
+            files="$staged_files"
+        elif [ -n "$staged_files" ] && [ -n "$files" ]; then
+            files=$(printf "%s\n%s" "$files" "$staged_files" | sort -u)
+        fi
+    fi
 
     if [ -z "$files" ]; then
         echo -e "${YELLOW}No changes detected relative to origin/$UPSTREAM.${NC}"
         exit 0
     fi
 
-    # If reverting a specific file, validate it exists in the diff
+    # Revert specific file
     if [ "$MODE" = "revert" ] && [ -n "$REVERT_FILE" ]; then
         if ! echo "$files" | grep -qx "$REVERT_FILE"; then
-            echo -e "${RED}Error: '$REVERT_FILE' is not in the list of changed files.${NC}"
+            echo -e "${RED}Error: '$REVERT_FILE' is not in the changed files.${NC}"
             echo -e "${GRAY}Changed files:${NC}"
             echo "$files" | while IFS= read -r f; do echo "  $f"; done
             exit 1
@@ -289,26 +360,16 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         files="$REVERT_FILE"
     fi
 
-    # Interactive selection (applies to open, amend, revert)
-    if [ "$SELECT" = true ] && [ "$MODE" != "keep" ]; then
+    # Interactive selection
+    if [ "$SELECT" = true ]; then
         files=$(select_files "$files")
     fi
 
     # Execute mode
     case "$MODE" in
-        open)
-            mode_open "$files" "$FINAL_EDITOR"
-            ;;
-        amend)
-            mode_amend "$files" "$FINAL_EDITOR" "$merge_base"
-            ;;
-        revert)
-            mode_revert "$files" "$merge_base"
-            ;;
-        keep)
-            mode_open "$files" "$FINAL_EDITOR"
-            mode_keep "$merge_base"
-            ;;
+        open)   mode_open "$files" "$FINAL_EDITOR" ;;
+        keep)   mode_keep "$files" "$FINAL_EDITOR" "$merge_base" "$UPSTREAM" "$FORCE" ;;
+        revert) mode_revert "$files" "$merge_base" "$FORCE" ;;
     esac
 EOF
 )

@@ -1,53 +1,63 @@
-# Opens, edits, reverts, or amends files changed since the fork point
+# Open, edit, and ship files changed in the current branch
 
 ## Description
-A multi-mode tool for working with files that changed relative to upstream.
-Opens files in your editor, supports intelligent amending into the last commit,
-reverting specific files to upstream state, and soft-resetting for squash workflows.
+A multi-mode tool for working with files changed relative to upstream.
+Opens files in your editor, pops commits for editing, ships changes to
+origin, or reverts files to upstream state.
+
+## Workflow
+
+The main workflow is a two-step edit cycle:
+
+```bash
+git pinch --pop      # 1. Pop commits, open files for editing
+# ... edit files ...
+git pinch --ship     # 2. Commit + push to origin
+```
 
 ## Usage
 ```
-$ git pinch              # Open all changed files
-$ git pinch -a           # Edit mode: open, edit, amend into last commit
-$ git pinch -r           # Revert all changed files to upstream state
+$ git pinch              # Open changed files (no side effects)
+$ git pinch --pop        # Pop commits + open for editing
+$ git pinch --ship       # Stage, commit/amend, push
+$ git pinch --revert     # Revert all files to upstream
 $ git pinch -r src/f.ts  # Revert a specific file
-$ git pinch -k           # Open files, then soft-reset (squash)
-$ git pinch -s -a        # Select which files to edit + amend
 ```
 
 ## Modes
 
 ### Default (open)
-Opens all changed files in the configured editor. No side effects.
+Opens all changed files in the editor. No git operations performed.
 
-### Amend (`-a, --amend`)
-1. Opens changed files in editor (with `--wait`)
-2. After closing, detects modified files
-3. Asks to amend changes into the last commit (`--no-edit`)
+### Pop (`-p, --pop`)
+1. Soft-resets all commits back to the merge base
+2. Opens the changed files in editor
+3. Changes remain staged for re-committing
 
-Ideal for quick fixes on existing commits without creating new ones.
+This "cracks open" your commits so you can edit freely.
+
+### Ship (`-s, --ship`)
+1. Stages all modified files
+2. If commits exist since merge base: amends the last commit
+3. If no commits exist: creates a new commit (suggests message from branch name)
+4. Pushes to origin with `--force-with-lease`
+
+This seals your edits and sends them to the remote.
 
 ### Revert (`-r, --revert [file]`)
-1. Shows files that will be reverted
-2. Asks for confirmation
-3. Checks out the file(s) from the merge-base, restoring upstream state
-4. Changes are staged — commit when ready
-
-Use without argument to revert all, or pass a specific file path.
-
-### Keep (`-k, --keep`)
-Opens files first, then soft-resets all commits back to the merge base.
-Changes remain staged for recommitting (squash workflow).
+Restores files to their upstream state (checks out from merge base).
+Pass a specific file path or omit to revert all changed files.
 
 ## Options
 | Flag | Description |
 |------|-------------|
-| `-a, --amend` | Amend mode: edit then amend last commit |
-| `-r, --revert [file]` | Revert mode: restore files to upstream state |
-| `-k, --keep` | Open + soft-reset to merge base |
-| `-s, --select` | Interactive file selector before any mode |
-| `-e, --editor <ed>` | Override auto-detected editor |
-| `-u, --upstream <br>` | Override upstream branch (default: auto from origin/HEAD) |
+| `-p, --pop` | Pop commits + open for editing |
+| `-s, --ship` | Stage + commit/amend + push |
+| `-r, --revert [file]` | Revert files to upstream state |
+| `-i, --interactive` | Interactively select which files to use |
+| `-e, --editor <ed>` | Override editor |
+| `-u, --upstream <br>` | Override upstream branch |
+| `-f, --force` | Skip confirmations |
 | `-h, --help` | Show help |
 | `-v, --version` | Show version |
 
@@ -59,29 +69,37 @@ Changes remain staged for recommitting (squash workflow).
 
 ## Examples
 
-### Fix a typo in existing work
+### Quick edit cycle
 ```bash
-$ git pinch -a
-# Editor opens with all changed files
-# Fix the typo, save, close
-# → "Amend these into the last commit? [Y/n]" → y
-# ✓ Last commit amended
+$ git pinch --pop
+# ✓ Popped 3 commit(s). Changes are staged.
+# Opening files for editing...
+# (editor opens, you make fixes, close editor)
+
+$ git pinch --ship
+# Applying 4 file(s):
+#   + src/api.ts
+#   + src/model.ts
+# ✓ Amended into: feat: add user endpoint
+# Push to origin/feat-add-user? [Y/n] y
+# ✓ Pushed to origin/feat-add-user
 ```
 
-### Undo changes to a specific file
+### Revert a mistake
 ```bash
 $ git pinch -r src/config.ts
 # ↩ src/config.ts
-# "Continue? [y/N]" → y
-# ✓ File reverted to upstream state (staged)
+# Continue? [y/N] y
+# ✓ src/config.ts
+# Files reverted. Changes are staged.
 ```
 
-### Cherry-pick which files to work with
+### Select specific files
 ```bash
-$ git pinch -s
+$ git pinch -i
 # 1) src/api.ts
 # 2) src/model.ts
 # 3) tests/api.test.ts
 # > 1 3
-# Opens only src/api.ts and tests/api.test.ts
+# (opens only selected files)
 ```
