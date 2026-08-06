@@ -63,6 +63,7 @@ show_help() {
     echo "  git extension --update     Update all installed extensions"
     echo "  git extension --list       List installed extensions"
     echo "  git extension --remove     Uninstall extensions"
+    echo "  git extension --self-update  Update the extension manager itself"
     echo "  git extension --help       Show this help"
     echo "  git extension --version    Show version"
     echo ""
@@ -510,6 +511,43 @@ mode_list() {
     echo ""
 }
 
+mode_self_update() {
+    echo -e "  ${C_CYAN}Updating git extension manager...${C_RESET}"
+    echo ""
+
+    local installer_url="$RAW_URL/../installer/script"
+    installer_url="https://raw.githubusercontent.com/$USER/$REPO/main/alias/installer/script"
+
+    local script_content=$(curl -sL "$installer_url")
+
+    if [ -z "$script_content" ]; then
+        echo -e "  ${C_RED}✗ Failed to download update.${C_RESET}"
+        exit 1
+    fi
+
+    # Extract remote version
+    local remote_ver=$(echo "$script_content" | grep -oP '^VERSION="[^"]*"' | head -1 | sed 's/VERSION="//;s/"//')
+
+    if [ -z "$remote_ver" ]; then
+        echo -e "  ${C_YELLOW}⚠ Could not detect remote version. Reinstalling anyway...${C_RESET}"
+    elif [ "$remote_ver" = "$VERSION" ]; then
+        echo -e "  ${C_GREEN}✓ Already up to date (v$VERSION).${C_RESET}"
+        exit 0
+    else
+        echo -e "  ${C_GRAY}Local:  v$VERSION${C_RESET}"
+        echo -e "  ${C_MAGENTA}Remote: v$remote_ver${C_RESET}"
+        echo ""
+    fi
+
+    if echo "$script_content" | bash > /dev/null 2>&1; then
+        echo -e "  ${C_GREEN}✓ Extension manager updated to v${remote_ver:-latest}.${C_RESET}"
+    else
+        echo -e "  ${C_RED}✗ Update failed.${C_RESET}"
+        exit 1
+    fi
+    echo ""
+}
+
 mode_uninstall() {
     echo -e "${C_CYAN}${C_BOLD}Uninstall git extensions${C_RESET}"
     echo ""
@@ -607,6 +645,7 @@ main() {
         --update|-u|update)          get_metadata; mode_update; exit 0 ;;
         --list|-l|list)              mode_list; exit 0 ;;
         --uninstall|--remove|remove) mode_uninstall; exit 0 ;;
+        --self-update|self-update)   mode_self_update; exit 0 ;;
         "")                          ;; # interactive mode
         *)
             echo -e "${C_RED}Unknown option: $1${C_RESET}"
