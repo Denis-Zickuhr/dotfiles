@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0.0",
+  "extensions": [
+    {
+      "name": "ctx",
+      "version": "1.0.0",
+      "description": "Unified branch context: name, ticket, and PR",
+      "has_profiles": true
+    },
+    {
+      "name": "pinch",
+      "version": "2.0.0",
+      "description": "Open, edit, and ship files changed in the current branch"
+    },
+    {
+      "name": "marry",
+      "version": "1.0.0",
+      "description": "Automated branch creation, commit, and push workflow"
+    },
+    {
+      "name": "torch",
+      "version": "1.0.0",
+      "description": "Burn local branches except protected ones"
+    },
+    {
+      "name": "rebirth",
+      "version": "1.0.0",
+      "description": "Hard-reset current branch to match remote origin"
+    },
+    {
+      "name": "cbn",
+      "version": "1.0.0",
+      "description": "Commit with message auto-generated from branch name"
+    },
+    {
+      "name": "quiver",
+      "version": "1.0.0",
+      "description": "Interactive branch manager with favorites and auto-stash"
+    },
+    {
+      "name": "hotfix",
+      "version": "1.0.0",
+      "description": "Cherry-pick commits into multiple target branches with PR links"
+    },
+    {
+      "name": "copen",
+      "version": "1.0.0",
+      "description": "Open modified and staged files in your editor"
+    },
+    {
+      "name": "fresh",
+      "version": "1.0.0",
+      "description": "Switch to main branch and sync with remote"
+    },
+    {
+      "name": "pr",
+      "version": "1.0.0",
+      "description": "Show or create pull request for the current branch"
+    }
+  ]
+}
