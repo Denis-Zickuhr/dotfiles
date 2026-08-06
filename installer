@@ -45,9 +45,12 @@ get_installed_version() {
 show_header() {
     clear
     echo -e "${C_BOLD}${C_CYAN}"
+    local ver_text="v$VERSION"
+    local pad=$(( (37 - ${#ver_text}) / 2 ))
+    local ver_line=$(printf "%*s%s%*s" $pad "" "$ver_text" $((37 - pad - ${#ver_text})) "")
     echo "  ┌─────────────────────────────────────┐"
     echo "  │       GIT EXTENSION MANAGER         │"
-    echo "  │              v$VERSION                  │"
+    echo "  │${ver_line}│"
     echo "  └─────────────────────────────────────┘"
     echo -e "${C_RESET}"
 }
