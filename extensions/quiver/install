@@ -289,6 +289,12 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local branches=($(get_quiver))
         local kept_branches=()
         local removed_count=0
+        local has_gh=false
+        command -v gh > /dev/null 2>&1 && has_gh=true
+
+        if [ "$has_gh" = false ]; then
+            echo -e "${YELLOW}  (gh CLI not found — squash-merge detection via PR status disabled)${NC}"
+        fi
 
         # Get the full list of merged branches once
         local merged_list=$(git branch --merged "origin/$main_branch" 2>/dev/null | sed 's/^[* ]*//')
@@ -325,6 +331,13 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             elif ! git ls-remote --heads origin "$b" 2>/dev/null | grep -q "$b"; then
                 is_merged=true
                 reason="remote branch deleted (likely squash-merged)"
+            # Check 5: PR status via gh CLI (catches squash merges where remote still exists)
+            elif [ "$has_gh" = true ]; then
+                local pr_state=$(gh pr list --head "$b" --state all --json state --jq '.[0].state' 2>/dev/null)
+                if [ "$pr_state" = "MERGED" ] || [ "$pr_state" = "CLOSED" ]; then
+                    is_merged=true
+                    reason="PR $pr_state"
+                fi
             fi
 
             if [ "$is_merged" = true ]; then
