@@ -1,0 +1,42 @@
+#!/bin/bash
+# ctx profile: Custom URL Prefix
+# Configures git ctx with a custom base URL for ticket links.
+#
+# Usage:
+#   bash custom                                  (interactive)
+#   bash custom "https://mytracker.com/issues/"  (non-interactive)
+#
+# The ticket prefix extracted from the branch will be appended to this URL.
+# Branch convention: [PREFIX]-[NUMBER]-description
+# Example with prefix "https://mytracker.com/issues/":
+#   MAG-42-fix-bug → https://mytracker.com/issues/MAG-42
+
+set -e
+
+GREEN="\033[0;32m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+
+URL_PREFIX="${1:-}"
+
+if [ -z "$URL_PREFIX" ]; then
+    echo -e "${CYAN}Custom Profile Setup${NC}"
+    echo -e "Enter the base URL for tickets (the branch prefix will be appended):"
+    echo -e "${CYAN}Example: https://mytracker.com/browse/${NC}"
+    read -p "> " URL_PREFIX
+fi
+
+if [ -z "$URL_PREFIX" ]; then
+    echo -e "${RED}Error: URL prefix is required.${NC}"
+    exit 1
+fi
+
+# Ensure trailing slash
+[[ "$URL_PREFIX" != */ ]] && URL_PREFIX="${URL_PREFIX}/"
+
+git config --global ctx.provider "custom"
+git config --global ctx.prefix "$URL_PREFIX"
+git config --global --unset ctx.domain 2>/dev/null || true
+
+echo -e "${GREEN}✓ ctx configured with custom prefix${NC}"
+echo -e "  prefix: ${CYAN}${URL_PREFIX}${NC}"
+echo -e ""
+echo -e "Test it: ${CYAN}git ctx -t${NC} (on a branch like PREFIX-123-description)"

@@ -1,0 +1,25 @@
+#!/bin/bash
+# ctx profile: GitHub Issues
+# Configures git ctx to generate GitHub issue links.
+#
+# Usage:
+#   bash github-issues
+#
+# Branch convention: [PREFIX]-[NUMBER]-description (number is the issue ID)
+# Example: FIX-78-memory-leak → https://github.com/org/repo/issues/78
+#
+# Note: Requires the repo to have a remote named 'origin' pointing to GitHub.
+# The repo path is auto-detected from the remote URL.
+
+set -e
+
+GREEN="\033[0;32m"; CYAN="\033[0;36m"; NC="\033[0m"
+
+git config --global ctx.provider "github-issues"
+git config --global --unset ctx.domain 2>/dev/null || true
+git config --global --unset ctx.prefix 2>/dev/null || true
+
+echo -e "${GREEN}✓ ctx configured with GitHub Issues provider${NC}"
+echo -e "  Repo is auto-detected from remote origin."
+echo -e ""
+echo -e "Test it: ${CYAN}git ctx -t${NC} (on a branch like PREFIX-123-description)"

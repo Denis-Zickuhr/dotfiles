@@ -1,0 +1,36 @@
+#!/bin/bash
+# ctx profile: Linear
+# Configures git ctx to generate Linear.app issue links.
+#
+# Usage:
+#   bash linear                    (interactive - asks for workspace)
+#   bash linear my-workspace       (non-interactive)
+#
+# Branch convention: [TEAM]-[NUMBER]-description
+# Example: ENG-42-add-auth → https://linear.app/my-workspace/issue/ENG-42
+
+set -e
+
+GREEN="\033[0;32m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+
+WORKSPACE="${1:-}"
+
+if [ -z "$WORKSPACE" ]; then
+    echo -e "${CYAN}Linear Profile Setup${NC}"
+    echo -e "Enter your Linear workspace slug (from your URL: linear.app/<workspace>):"
+    read -p "> " WORKSPACE
+fi
+
+if [ -z "$WORKSPACE" ]; then
+    echo -e "${RED}Error: Workspace slug is required.${NC}"
+    exit 1
+fi
+
+git config --global ctx.provider "linear"
+git config --global ctx.domain "$WORKSPACE"
+git config --global --unset ctx.prefix 2>/dev/null || true
+
+echo -e "${GREEN}✓ ctx configured with Linear provider${NC}"
+echo -e "  workspace: ${CYAN}${WORKSPACE}${NC}"
+echo -e ""
+echo -e "Test it: ${CYAN}git ctx -t${NC} (on a branch like TEAM-123-description)"

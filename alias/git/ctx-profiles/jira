@@ -1,0 +1,41 @@
+#!/bin/bash
+# ctx profile: Jira
+# Configures git ctx to generate Atlassian Jira ticket links.
+#
+# Usage:
+#   bash jira                          (interactive - asks for domain)
+#   bash jira mycompany.atlassian.net  (non-interactive)
+#
+# Branch convention: [PROJECT]-[NUMBER]-description
+# Example: MAG-1234-fix-redis → https://mycompany.atlassian.net/browse/MAG-1234
+
+set -e
+
+GREEN="\033[0;32m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+
+DOMAIN="${1:-}"
+
+if [ -z "$DOMAIN" ]; then
+    echo -e "${CYAN}Jira Profile Setup${NC}"
+    echo -e "Enter your Atlassian domain (e.g., mycompany.atlassian.net):"
+    read -p "> " DOMAIN
+fi
+
+if [ -z "$DOMAIN" ]; then
+    echo -e "${RED}Error: Domain is required.${NC}"
+    exit 1
+fi
+
+# Ensure domain has proper format
+if [[ "$DOMAIN" != *".atlassian.net"* ]] && [[ "$DOMAIN" != *"."* ]]; then
+    DOMAIN="${DOMAIN}.atlassian.net"
+fi
+
+git config --global ctx.provider "jira"
+git config --global ctx.domain "$DOMAIN"
+git config --global --unset ctx.prefix 2>/dev/null || true
+
+echo -e "${GREEN}✓ ctx configured with Jira provider${NC}"
+echo -e "  domain: ${CYAN}${DOMAIN}${NC}"
+echo -e ""
+echo -e "Test it: ${CYAN}git ctx -t${NC} (on a branch like PROJECT-123-description)"

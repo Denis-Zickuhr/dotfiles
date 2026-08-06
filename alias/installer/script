@@ -27,7 +27,20 @@ get_metadata() {
     echo -ne "${C_CYAN}fetching extensions metadata...${C_RESET} "
     local response=$(curl -s "$API_URL")
     ALL_FILES=$(echo "$response" | grep '"name":' | sed -E 's/.*"name": "(.*)".*/\1/')
-    mapfile -t ALIASES < <(echo "$ALL_FILES" | grep -v "\.doc\.md$")
+    local ALL_TYPES=$(echo "$response" | grep '"type":' | sed -E 's/.*"type": "(.*)".*/\1/')
+    # Build list excluding docs and directories
+    local names_arr=()
+    local types_arr=()
+    while IFS= read -r n; do names_arr+=("$n"); done <<< "$ALL_FILES"
+    while IFS= read -r t; do types_arr+=("$t"); done <<< "$ALL_TYPES"
+    ALIASES=()
+    for idx in "${!names_arr[@]}"; do
+        local name="${names_arr[$idx]}"
+        local type="${types_arr[$idx]}"
+        [[ "$type" == "dir" ]] && continue
+        [[ "$name" == *.doc.md ]] && continue
+        ALIASES+=("$name")
+    done
     if [ ${#ALIASES[@]} -eq 0 ]; then
         echo -e "${C_RED}error:${C_RESET} no extensions found."; exit 1
     fi
@@ -114,8 +127,74 @@ handle_input() {
     done
 }
 
+configure_ctx_profile() {
+    local PROFILES_URL="https://api.github.com/repos/$USER/$REPO/contents/$PATH_GIT/ctx-profiles"
+    local PROFILES_RAW="$RAW_URL/ctx-profiles"
+
+    echo -e "\n${C_BOLD}ctx provider setup${C_RESET}"
+    echo -e "${C_GRAY}Select a ticket provider to configure:${C_RESET}\n"
+
+    local profiles_response=$(curl -s "$PROFILES_URL")
+    local profile_names=$(echo "$profiles_response" | grep '"name":' | sed -E 's/.*"name": "(.*)".*/\1/')
+
+    if [ -z "$profile_names" ]; then
+        echo -e "${C_YELLOW}No profiles found. Skipping provider setup.${C_RESET}"
+        return
+    fi
+
+    local i=1
+    local profile_list=()
+    while IFS= read -r p; do
+        profile_list+=("$p")
+        echo -e "  ${C_CYAN}$i)${C_RESET} $p"
+        i=$((i+1))
+    done <<< "$profile_names"
+    echo -e "  ${C_GRAY}s) skip${C_RESET}"
+
+    echo ""
+    local choice
+    read -p "Choose profile: " choice < /dev/tty
+
+    if [[ "$choice" =~ ^[sS]$ ]] || [ -z "$choice" ]; then
+        echo -e "${C_YELLOW}Skipped provider configuration.${C_RESET}"
+        return
+    fi
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#profile_list[@]}" ]; then
+        local selected_profile="${profile_list[$((choice-1))]}"
+        local profile_script=$(curl -sL "$PROFILES_RAW/$selected_profile")
+
+        if [ -z "$profile_script" ]; then
+            echo -e "${C_RED}Failed to fetch profile.${C_RESET}"
+            return
+        fi
+
+        # Profiles that need input: ask for it
+        case "$selected_profile" in
+            jira)
+                read -p "Jira domain (e.g., mycompany.atlassian.net): " domain < /dev/tty
+                echo "$profile_script" | bash -s -- "$domain"
+                ;;
+            linear)
+                read -p "Linear workspace slug: " workspace < /dev/tty
+                echo "$profile_script" | bash -s -- "$workspace"
+                ;;
+            custom)
+                read -p "Custom URL prefix (e.g., https://tracker.com/browse/): " prefix < /dev/tty
+                echo "$profile_script" | bash -s -- "$prefix"
+                ;;
+            *)
+                echo "$profile_script" | bash
+                ;;
+        esac
+    else
+        echo -e "${C_RED}Invalid choice. Skipping.${C_RESET}"
+    fi
+}
+
 execute_tasks() {
     local count=0
+    local ctx_selected=false
     echo -e "\n${C_BOLD}starting installation...${C_RESET}"
     for i in "${!ALIASES[@]}"; do
         if [ "${selected[$i]}" -eq 1 ]; then
@@ -139,8 +218,14 @@ execute_tasks() {
                     echo -e "${C_RED}failed${C_RESET}"
                 fi
             fi
+            [ "$file" = "ctx" ] && ctx_selected=true
         fi
     done
+
+    if [ "$ctx_selected" = true ]; then
+        configure_ctx_profile
+    fi
+
     [ $count -eq 0 ] && echo -e "${C_YELLOW}nothing selected.${C_RESET}" || echo -e "\n${C_GREEN}successfully installed $count extensions.${C_RESET}"
 }
 
