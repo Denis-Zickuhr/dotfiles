@@ -321,6 +321,10 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             elif echo "$merged_list" | grep -qxF "$b"; then
                 is_merged=true
                 reason="listed as merged into $main_branch"
+            # Check 4: Branch exists locally but remote was deleted (squash-merge pattern)
+            elif ! git ls-remote --heads origin "$b" 2>/dev/null | grep -q "$b"; then
+                is_merged=true
+                reason="remote branch deleted (likely squash-merged)"
             fi
 
             if [ "$is_merged" = true ]; then
