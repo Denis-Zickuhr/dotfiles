@@ -1,6 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
+VERSION="2.0.0"
 USER="Denis-Zickuhr"
 REPO="dotfiles"
 PATH_GIT="alias/git"
@@ -10,29 +11,93 @@ GITHUB_BROWSE="https://github.com/$USER/$REPO/blob/main/$PATH_GIT"
 
 C_RESET='\033[0m'
 C_BOLD='\033[1m'
+C_DIM='\033[2m'
 C_GREEN='\033[32m'
 C_RED='\033[31m'
 C_YELLOW='\033[33m'
 C_CYAN='\033[36m'
+C_BLUE='\033[34m'
+C_MAGENTA='\033[35m'
 C_REVERSE='\033[7m'
 C_GRAY='\033[90m'
 
+# --- Helpers ---
+
 check_dependencies() {
     for cmd in curl git; do
-        command -v "$cmd" &> /dev/null || { echo -e "${C_RED}error:${C_RESET} $cmd is not installed."; exit 1; }
+        command -v "$cmd" &> /dev/null || {
+            echo -e "${C_RED}✗ Error:${C_RESET} $cmd is not installed."
+            exit 1
+        }
     done
 }
 
+is_installed() {
+    local alias_name=$1
+    git config --global --get "alias.$alias_name" > /dev/null 2>&1
+}
+
+get_installed_version() {
+    local alias_name=$1
+    local alias_content=$(git config --global --get "alias.$alias_name" 2>/dev/null)
+    echo "$alias_content" | grep -oP 'VERSION="[^"]*"' | head -1 | sed 's/VERSION="//;s/"//'
+}
+
+show_header() {
+    clear
+    echo -e "${C_BOLD}${C_CYAN}"
+    echo "  ┌─────────────────────────────────────┐"
+    echo "  │       GIT EXTENSION MANAGER         │"
+    echo "  │            v$VERSION                    │"
+    echo "  └─────────────────────────────────────┘"
+    echo -e "${C_RESET}"
+}
+
+show_help() {
+    echo -e "${C_CYAN}git extension v$VERSION${C_RESET}"
+    echo ""
+    echo "Interactive installer and manager for git aliases."
+    echo ""
+    echo -e "${C_YELLOW}Usage:${C_RESET}"
+    echo "  git extension              Interactive UI"
+    echo "  git extension --update     Update all installed extensions"
+    echo "  git extension --list       List installed extensions"
+    echo "  git extension --remove     Uninstall extensions"
+    echo "  git extension --help       Show this help"
+    echo "  git extension --version    Show version"
+    echo ""
+    echo -e "${C_YELLOW}Interactive controls:${C_RESET}"
+    echo "  ↑/↓        Navigate"
+    echo "  Space       Toggle selection"
+    echo "  a           Select all"
+    echo "  n           Select none"
+    echo "  i           Select only new/outdated"
+    echo "  h           Toggle help preview"
+    echo "  Enter       Install selected"
+    echo "  q           Quit"
+    exit 0
+}
+
+# --- Metadata ---
+
 get_metadata() {
-    echo -ne "${C_CYAN}fetching extensions metadata...${C_RESET} "
+    echo -ne "  ${C_GRAY}Fetching extensions"
     local response=$(curl -s "$API_URL")
+
+    if echo "$response" | grep -q '"message"'; then
+        echo -e "\n  ${C_RED}✗ Failed to fetch from GitHub API.${C_RESET}"
+        echo -e "  ${C_GRAY}Check your connection or try again later.${C_RESET}"
+        exit 1
+    fi
+
     ALL_FILES=$(echo "$response" | grep '"name":' | sed -E 's/.*"name": "(.*)".*/\1/')
     local ALL_TYPES=$(echo "$response" | grep '"type":' | sed -E 's/.*"type": "(.*)".*/\1/')
-    # Build list excluding docs and directories
+
     local names_arr=()
     local types_arr=()
     while IFS= read -r n; do names_arr+=("$n"); done <<< "$ALL_FILES"
     while IFS= read -r t; do types_arr+=("$t"); done <<< "$ALL_TYPES"
+
     ALIASES=()
     for idx in "${!names_arr[@]}"; do
         local name="${names_arr[$idx]}"
@@ -41,64 +106,139 @@ get_metadata() {
         [[ "$name" == *.doc.md ]] && continue
         ALIASES+=("$name")
     done
+
     if [ ${#ALIASES[@]} -eq 0 ]; then
-        echo -e "${C_RED}error:${C_RESET} no extensions found."; exit 1
+        echo -e "\n  ${C_RED}✗ No extensions found.${C_RESET}"
+        exit 1
     fi
+
+    INSTALLED_COUNT=0
+    NEW_COUNT=0
+
     for i in "${!ALIASES[@]}"; do
-        local doc_name="${ALIASES[$i]}.doc.md"
+        local alias_name="${ALIASES[$i]}"
+        echo -ne "."
+
+        # Check installation status
+        if is_installed "$alias_name"; then
+            STATUS[$i]="installed"
+            INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+            LOCAL_VERSION[$i]=$(get_installed_version "$alias_name")
+        else
+            STATUS[$i]="new"
+            NEW_COUNT=$((NEW_COUNT + 1))
+            LOCAL_VERSION[$i]=""
+        fi
+
+        # Fetch description from doc
+        local doc_name="${alias_name}.doc.md"
         if echo "$ALL_FILES" | grep -q "^$doc_name$"; then
             HAS_DOC[$i]=true
-            DESCRIPTIONS[$i]=$(curl -sL --max-time 2 "$RAW_URL/$doc_name" | head -n 1 | sed 's/^# //')
+            local doc_content=$(curl -sL --max-time 3 "$RAW_URL/$doc_name")
+            DESCRIPTIONS[$i]=$(echo "$doc_content" | head -n 1 | sed 's/^# //')
+            # Try to get remote version from script
+            local script_content=$(curl -sL --max-time 3 "$RAW_URL/$alias_name")
+            REMOTE_VERSION[$i]=$(echo "$script_content" | grep -oP 'VERSION="[^"]*"' | head -1 | sed 's/VERSION="//;s/"//')
         else
             HAS_DOC[$i]=false
             DESCRIPTIONS[$i]=""
+            REMOTE_VERSION[$i]=""
         fi
-        echo -ne "${C_GREEN}.${C_RESET}"
+
+        # Check if update available
+        if [ "${STATUS[$i]}" = "installed" ] && [ -n "${REMOTE_VERSION[$i]}" ] && [ -n "${LOCAL_VERSION[$i]}" ]; then
+            if [ "${LOCAL_VERSION[$i]}" != "${REMOTE_VERSION[$i]}" ]; then
+                STATUS[$i]="update"
+                NEW_COUNT=$((NEW_COUNT + 1))
+                INSTALLED_COUNT=$((INSTALLED_COUNT - 1))
+            fi
+        fi
     done
     echo -e " ${C_GREEN}done${C_RESET}"
 }
 
-get_help_content() {
-    local index=$1
-    local target="${ALIASES[$index]}"
-    HELP_URL="$GITHUB_BROWSE/$target.doc.md"
-    if [ "${HAS_DOC[$index]}" = false ]; then
-        HELP_DATA="${C_RED}Error: Documentation file not found.${C_RESET}"
-        return
+# --- UI ---
+
+get_status_badge() {
+    local status=$1
+    case "$status" in
+        installed) echo -e "${C_GREEN}●${C_RESET}" ;;
+        new)       echo -e "${C_YELLOW}○${C_RESET}" ;;
+        update)    echo -e "${C_MAGENTA}↑${C_RESET}" ;;
+    esac
+}
+
+get_version_display() {
+    local i=$1
+    local local_v="${LOCAL_VERSION[$i]}"
+    local remote_v="${REMOTE_VERSION[$i]}"
+
+    if [ "${STATUS[$i]}" = "update" ]; then
+        echo -e "${C_GRAY}${local_v}${C_RESET} → ${C_MAGENTA}${remote_v}${C_RESET}"
+    elif [ -n "$local_v" ]; then
+        echo -e "${C_GRAY}v${local_v}${C_RESET}"
+    elif [ -n "$remote_v" ]; then
+        echo -e "${C_GRAY}v${remote_v}${C_RESET}"
     fi
-    HELP_DATA=$(curl -sL -f "$RAW_URL/$target.doc.md")
 }
 
 render_ui() {
-    clear
-    echo -e "${C_BOLD}GIT EXTENSION MANAGER${C_RESET}"
-    echo -e "${C_GRAY}Arrows [↑/↓] | [Space] Mark | [A] All | [N] None | [H] Help | [Q] Quit | [Enter] Apply${C_RESET}\n"
+    show_header
+
+    local sel_count=0
+    for i in "${!selected[@]}"; do
+        [ "${selected[$i]}" -eq 1 ] && sel_count=$((sel_count + 1))
+    done
+
+    echo -e "  ${C_GRAY}${#ALIASES[@]} extensions │ ${C_GREEN}${INSTALLED_COUNT} installed${C_RESET} ${C_GRAY}│${C_RESET} ${C_YELLOW}${NEW_COUNT} new/update${C_RESET} ${C_GRAY}│ ${sel_count} selected${C_RESET}"
+    echo -e "  ${C_GRAY}────────────────────────────────────────────────────────${C_RESET}"
+    echo ""
+
     for i in "${!ALIASES[@]}"; do
-        local check="[ ] "
+        local badge=$(get_status_badge "${STATUS[$i]}")
+        local check="  "
         local color=$C_RESET
-        [ "${selected[$i]}" -eq 1 ] && { check="[X] "; color=$C_GREEN; }
-        local quick_desc=""
-        [ -n "${DESCRIPTIONS[$i]}" ] && quick_desc=" ${C_GRAY}- ${DESCRIPTIONS[$i]}${C_RESET}"
+        [ "${selected[$i]}" -eq 1 ] && { check="${C_GREEN}✓${C_RESET} "; color=$C_RESET; }
+
+        local version_info=$(get_version_display "$i")
+        local desc=""
+        [ -n "${DESCRIPTIONS[$i]}" ] && desc=" ${C_GRAY}─ ${DESCRIPTIONS[$i]}${C_RESET}"
+
+        local name_display="${ALIASES[$i]}"
+        [ -n "$version_info" ] && name_display="${name_display} ${version_info}"
+
         if [ "$i" -eq "$cursor" ]; then
-            echo -e "${C_REVERSE} > $check${ALIASES[$i]}${C_RESET}${quick_desc}"
-            if [ "$help_active" = true ]; then
-                local box_width=${#HELP_URL}
-                local line_char=$(printf '─%.0s' $(seq 1 $((box_width + 2))))
-                echo -e "     ${C_GRAY}┌${line_char}┐${C_RESET}"
-                echo -e "     ${C_GRAY}│${C_RESET} ${C_CYAN}${HELP_URL}${C_RESET} ${C_GRAY}│${C_RESET}"
-                echo -e "     ${C_GRAY}└${line_char}┘${C_RESET}"
+            echo -e "  ${C_REVERSE} ${badge} ${check}${name_display} ${C_RESET}${desc}"
+
+            if [ "$help_active" = true ] && [ "${HAS_DOC[$i]}" = true ]; then
+                echo -e "     ${C_GRAY}┌──────────────────────────────────────────┐${C_RESET}"
+                echo -e "     ${C_GRAY}│${C_RESET} ${C_CYAN}${GITHUB_BROWSE}/${ALIASES[$i]}.doc.md${C_RESET}"
+                echo -e "     ${C_GRAY}└──────────────────────────────────────────┘${C_RESET}"
             fi
         else
-            echo -e "   $color$check${ALIASES[$i]}${C_RESET}${quick_desc}"
+            echo -e "   ${badge} ${check}${name_display}${desc}"
         fi
     done
+
+    echo ""
+    echo -e "  ${C_GRAY}[↑↓] Navigate  [Space] Toggle  [a] All  [n] None  [i] Smart${C_RESET}"
+    echo -e "  ${C_GRAY}[h] Help  [Enter] Install  [q] Quit${C_RESET}"
 }
 
 handle_input() {
     cursor=0
     help_active=false
     selected=()
-    for i in "${!ALIASES[@]}"; do selected[$i]=0; done
+
+    # Pre-select new and update
+    for i in "${!ALIASES[@]}"; do
+        if [ "${STATUS[$i]}" = "new" ] || [ "${STATUS[$i]}" = "update" ]; then
+            selected[$i]=1
+        else
+            selected[$i]=0
+        fi
+    done
+
     while true; do
         render_ui
         IFS= read -rsn1 key
@@ -106,39 +246,72 @@ handle_input() {
             $'\x1b')
                 read -rsn2 -t 0.1 next
                 case "$next" in
-                    '[A') ((cursor--)); [ "$cursor" -lt 0 ] && cursor=$((${#ALIASES[@]} - 1)); help_active=false ;;
-                    '[B') ((cursor++)); [ "$cursor" -ge "${#ALIASES[@]}" ] && cursor=0; help_active=false ;;
+                    '[A')
+                        ((cursor--))
+                        [ "$cursor" -lt 0 ] && cursor=$((${#ALIASES[@]} - 1))
+                        help_active=false
+                        ;;
+                    '[B')
+                        ((cursor++))
+                        [ "$cursor" -ge "${#ALIASES[@]}" ] && cursor=0
+                        help_active=false
+                        ;;
                 esac
                 ;;
-            " ") [ "${selected[$cursor]}" -eq 1 ] && selected[$cursor]=0 || selected[$cursor]=1 ;;
-            [aA]) for i in "${!selected[@]}"; do selected[$i]=1; done ;;
-            [nN]) for i in "${!selected[@]}"; do selected[$i]=0; done ;;
-            [qQ]) echo -e "\n${C_BOLD}installation aborted...${C_RESET}"; exit 0 ;;
+            " ")
+                [ "${selected[$cursor]}" -eq 1 ] && selected[$cursor]=0 || selected[$cursor]=1
+                ;;
+            [aA])
+                for i in "${!selected[@]}"; do selected[$i]=1; done
+                ;;
+            [nN])
+                for i in "${!selected[@]}"; do selected[$i]=0; done
+                ;;
+            [iI])
+                # Smart select: only new/outdated
+                for i in "${!ALIASES[@]}"; do
+                    if [ "${STATUS[$i]}" = "new" ] || [ "${STATUS[$i]}" = "update" ]; then
+                        selected[$i]=1
+                    else
+                        selected[$i]=0
+                    fi
+                done
+                ;;
             [hH])
                 if [ "$help_active" = true ]; then
                     help_active=false
                 else
                     help_active=true
-                    get_help_content "$cursor"
                 fi
                 ;;
-            "") break ;;
+            [qQ])
+                clear
+                echo -e "  ${C_GRAY}Cancelled.${C_RESET}"
+                exit 0
+                ;;
+            "")
+                break
+                ;;
         esac
     done
 }
+
+# --- Installation ---
 
 configure_ctx_profile() {
     local PROFILES_URL="https://api.github.com/repos/$USER/$REPO/contents/$PATH_GIT/ctx-profiles"
     local PROFILES_RAW="$RAW_URL/ctx-profiles"
 
-    echo -e "\n${C_BOLD}ctx provider setup${C_RESET}"
-    echo -e "${C_GRAY}Select a ticket provider to configure:${C_RESET}\n"
+    echo ""
+    echo -e "  ${C_BOLD}ctx provider setup${C_RESET}"
+    echo -e "  ${C_GRAY}Select a ticket provider:${C_RESET}"
+    echo ""
 
     local profiles_response=$(curl -s "$PROFILES_URL")
     local profile_names=$(echo "$profiles_response" | grep '"name":' | sed -E 's/.*"name": "(.*)".*/\1/')
 
     if [ -z "$profile_names" ]; then
-        echo -e "${C_YELLOW}No profiles found. Skipping provider setup.${C_RESET}"
+        echo -e "  ${C_YELLOW}No profiles found. Skipping.${C_RESET}"
         return
     fi
 
@@ -146,17 +319,17 @@ configure_ctx_profile() {
     local profile_list=()
     while IFS= read -r p; do
         profile_list+=("$p")
-        echo -e "  ${C_CYAN}$i)${C_RESET} $p"
+        echo -e "    ${C_CYAN}$i)${C_RESET} $p"
         i=$((i+1))
     done <<< "$profile_names"
-    echo -e "  ${C_GRAY}s) skip${C_RESET}"
-
+    echo -e "    ${C_GRAY}s) skip${C_RESET}"
     echo ""
+
     local choice
-    read -p "Choose profile: " choice < /dev/tty
+    read -p "    Choose: " choice < /dev/tty
 
     if [[ "$choice" =~ ^[sS]$ ]] || [ -z "$choice" ]; then
-        echo -e "${C_YELLOW}Skipped provider configuration.${C_RESET}"
+        echo -e "  ${C_GRAY}Skipped.${C_RESET}"
         return
     fi
 
@@ -165,22 +338,21 @@ configure_ctx_profile() {
         local profile_script=$(curl -sL "$PROFILES_RAW/$selected_profile")
 
         if [ -z "$profile_script" ]; then
-            echo -e "${C_RED}Failed to fetch profile.${C_RESET}"
+            echo -e "  ${C_RED}✗ Failed to fetch profile.${C_RESET}"
             return
         fi
 
-        # Profiles that need input: ask for it
         case "$selected_profile" in
             jira)
-                read -p "Jira domain (e.g., mycompany.atlassian.net): " domain < /dev/tty
+                read -p "    Jira domain (e.g., mycompany.atlassian.net): " domain < /dev/tty
                 echo "$profile_script" | bash -s -- "$domain"
                 ;;
             linear)
-                read -p "Linear workspace slug: " workspace < /dev/tty
+                read -p "    Linear workspace slug: " workspace < /dev/tty
                 echo "$profile_script" | bash -s -- "$workspace"
                 ;;
             custom)
-                read -p "Custom URL prefix (e.g., https://tracker.com/browse/): " prefix < /dev/tty
+                read -p "    URL prefix (e.g., https://tracker.com/browse/): " prefix < /dev/tty
                 echo "$profile_script" | bash -s -- "$prefix"
                 ;;
             *)
@@ -188,53 +360,267 @@ configure_ctx_profile() {
                 ;;
         esac
     else
-        echo -e "${C_RED}Invalid choice. Skipping.${C_RESET}"
+        echo -e "  ${C_RED}Invalid choice.${C_RESET}"
     fi
 }
 
 execute_tasks() {
     local count=0
+    local success=0
+    local failed=0
     local ctx_selected=false
-    echo -e "\n${C_BOLD}starting installation...${C_RESET}"
+
+    # Count selected
+    for i in "${!ALIASES[@]}"; do
+        [ "${selected[$i]}" -eq 1 ] && count=$((count + 1))
+    done
+
+    if [ $count -eq 0 ]; then
+        clear
+        echo -e "  ${C_YELLOW}Nothing selected.${C_RESET}"
+        exit 0
+    fi
+
+    clear
+    show_header
+    echo -e "  ${C_BOLD}Installing $count extension(s)...${C_RESET}"
+    echo ""
+
+    local current=0
     for i in "${!ALIASES[@]}"; do
         if [ "${selected[$i]}" -eq 1 ]; then
-            count=$((count+1))
+            current=$((current + 1))
             local file="${ALIASES[$i]}"
             local url="$RAW_URL/$file"
-            echo -ne "  installing ${C_CYAN}$file${C_RESET}... "
-            if [[ "$file" == *".alias.def" ]]; then
-                local key="${file%.alias.def}"
-                local cmd=$(curl -sL "$url")
-                if [ -n "$cmd" ]; then
-                    git config --global alias."$key" "$cmd"
-                    echo -e "${C_GREEN}done${C_RESET}"
-                else
-                    echo -e "${C_RED}failed${C_RESET}"
-                fi
-            else
-                if curl -sL "$url" | bash; then
-                    echo -e "${C_GREEN}done${C_RESET}"
-                else
-                    echo -e "${C_RED}failed${C_RESET}"
-                fi
+            local action="installing"
+            [ "${STATUS[$i]}" = "update" ] && action="updating"
+            [ "${STATUS[$i]}" = "installed" ] && action="reinstalling"
+
+            echo -ne "  ${C_GRAY}[$current/$count]${C_RESET} ${action} ${C_CYAN}$file${C_RESET}... "
+
+            local script_content=$(curl -sL "$url")
+            if [ -z "$script_content" ]; then
+                echo -e "${C_RED}✗ download failed${C_RESET}"
+                failed=$((failed + 1))
+                continue
             fi
+
+            if echo "$script_content" | bash > /dev/null 2>&1; then
+                local ver="${REMOTE_VERSION[$i]}"
+                [ -n "$ver" ] && echo -e "${C_GREEN}✓${C_RESET} ${C_GRAY}v${ver}${C_RESET}" || echo -e "${C_GREEN}✓${C_RESET}"
+                success=$((success + 1))
+            else
+                echo -e "${C_RED}✗ install failed${C_RESET}"
+                failed=$((failed + 1))
+            fi
+
             [ "$file" = "ctx" ] && ctx_selected=true
         fi
     done
 
-    if [ "$ctx_selected" = true ]; then
-        configure_ctx_profile
+    # Summary
+    echo ""
+    echo -e "  ${C_GRAY}────────────────────────────────────────${C_RESET}"
+    if [ $failed -eq 0 ]; then
+        echo -e "  ${C_GREEN}✓ All $success extension(s) installed successfully.${C_RESET}"
+    else
+        echo -e "  ${C_GREEN}✓ $success installed${C_RESET} │ ${C_RED}✗ $failed failed${C_RESET}"
     fi
 
-    [ $count -eq 0 ] && echo -e "${C_YELLOW}nothing selected.${C_RESET}" || echo -e "\n${C_GREEN}successfully installed $count extensions.${C_RESET}"
+    # ctx profile setup
+    if [ "$ctx_selected" = true ]; then
+        # Only prompt if ctx is not already configured
+        if ! git config --global --get ctx.provider > /dev/null 2>&1; then
+            configure_ctx_profile
+        else
+            local provider=$(git config --global --get ctx.provider)
+            echo -e "\n  ${C_GRAY}ctx already configured (provider: $provider). Skipping setup.${C_RESET}"
+        fi
+    fi
+
+    echo ""
 }
+
+# --- Modes ---
+
+mode_update() {
+    show_header
+    echo -e "  ${C_BOLD}Updating all installed extensions...${C_RESET}"
+    echo ""
+
+    get_metadata
+
+    local count=0
+    local updated=0
+
+    for i in "${!ALIASES[@]}"; do
+        if [ "${STATUS[$i]}" = "installed" ] || [ "${STATUS[$i]}" = "update" ]; then
+            count=$((count + 1))
+            local file="${ALIASES[$i]}"
+            local url="$RAW_URL/$file"
+
+            echo -ne "  ${C_GRAY}[$count]${C_RESET} ${C_CYAN}$file${C_RESET}... "
+
+            local script_content=$(curl -sL "$url")
+            if [ -n "$script_content" ] && echo "$script_content" | bash > /dev/null 2>&1; then
+                local ver="${REMOTE_VERSION[$i]}"
+                if [ "${STATUS[$i]}" = "update" ]; then
+                    echo -e "${C_MAGENTA}↑${C_RESET} ${C_GRAY}${LOCAL_VERSION[$i]} → ${ver}${C_RESET}"
+                    updated=$((updated + 1))
+                else
+                    echo -e "${C_GREEN}✓${C_RESET} ${C_GRAY}v${ver}${C_RESET}"
+                fi
+            else
+                echo -e "${C_RED}✗${C_RESET}"
+            fi
+        fi
+    done
+
+    echo ""
+    if [ $updated -gt 0 ]; then
+        echo -e "  ${C_GREEN}✓ $updated extension(s) updated, $((count - updated)) already current.${C_RESET}"
+    else
+        echo -e "  ${C_GREEN}✓ All $count extension(s) are up to date.${C_RESET}"
+    fi
+    echo ""
+}
+
+mode_list() {
+    echo -e "${C_CYAN}Installed git extensions:${C_RESET}"
+    echo ""
+
+    local count=0
+    local aliases=$(git config --global --get-regexp '^alias\.' 2>/dev/null | awk -F'[. ]' '{print $2}' | sort -u)
+
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        local version=$(get_installed_version "$name")
+        if [ -n "$version" ]; then
+            echo -e "  ${C_GREEN}●${C_RESET} ${name} ${C_GRAY}v${version}${C_RESET}"
+            count=$((count + 1))
+        fi
+    done <<< "$aliases"
+
+    if [ $count -eq 0 ]; then
+        echo -e "  ${C_YELLOW}No versioned extensions found.${C_RESET}"
+    else
+        echo ""
+        echo -e "  ${C_GRAY}$count extension(s) with version tracking.${C_RESET}"
+    fi
+    echo ""
+}
+
+mode_uninstall() {
+    echo -e "${C_CYAN}${C_BOLD}Uninstall git extensions${C_RESET}"
+    echo ""
+
+    # Gather installed versioned aliases
+    local names=()
+    local versions=()
+    local aliases=$(git config --global --get-regexp '^alias\.' 2>/dev/null | awk -F'[. ]' '{print $2}' | sort -u)
+
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        local ver=$(get_installed_version "$name")
+        if [ -n "$ver" ]; then
+            names+=("$name")
+            versions+=("$ver")
+        fi
+    done <<< "$aliases"
+
+    if [ ${#names[@]} -eq 0 ]; then
+        echo -e "  ${C_YELLOW}No versioned extensions installed.${C_RESET}"
+        exit 0
+    fi
+
+    echo -e "  ${C_GRAY}Select extensions to uninstall (space-separated numbers, or 'a' for all):${C_RESET}"
+    echo ""
+
+    for i in "${!names[@]}"; do
+        echo -e "    ${C_CYAN}$((i+1)))${C_RESET} ${names[$i]} ${C_GRAY}v${versions[$i]}${C_RESET}"
+    done
+    echo ""
+
+    local choice
+    read -p "  > " choice < /dev/tty
+
+    if [ -z "$choice" ]; then
+        echo -e "  ${C_GRAY}Cancelled.${C_RESET}"
+        exit 0
+    fi
+
+    local to_remove=()
+
+    if [[ "$choice" =~ ^[aA]$ ]]; then
+        to_remove=("${names[@]}")
+    else
+        for num in $choice; do
+            if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#names[@]}" ]; then
+                to_remove+=("${names[$((num-1))]}")
+            fi
+        done
+    fi
+
+    if [ ${#to_remove[@]} -eq 0 ]; then
+        echo -e "  ${C_YELLOW}No valid selection.${C_RESET}"
+        exit 0
+    fi
+
+    echo ""
+    echo -e "  ${C_YELLOW}Will uninstall ${#to_remove[@]} extension(s):${C_RESET}"
+    for name in "${to_remove[@]}"; do
+        echo -e "    ${C_RED}✗${C_RESET} $name"
+    done
+    echo ""
+
+    read -p "  Confirm? [y/N] " confirm < /dev/tty
+    case "$confirm" in
+        [yY][eE][sS]|[yY]) ;;
+        *)
+            echo -e "  ${C_GRAY}Cancelled.${C_RESET}"
+            exit 0
+            ;;
+    esac
+
+    echo ""
+    for name in "${to_remove[@]}"; do
+        if git config --global --unset "alias.$name" 2>/dev/null; then
+            echo -e "  ${C_RED}✗${C_RESET} Removed ${C_CYAN}$name${C_RESET}"
+        else
+            echo -e "  ${C_YELLOW}⚠${C_RESET} $name not found or already removed"
+        fi
+    done
+
+    echo ""
+    echo -e "  ${C_GREEN}✓ Done. ${#to_remove[@]} extension(s) uninstalled.${C_RESET}"
+    echo ""
+}
+
+# --- Main ---
 
 main() {
     check_dependencies
+
+    case "${1:-}" in
+        -h|--help|help)              show_help ;;
+        -v|--version|version)        echo "git extension v$VERSION"; exit 0 ;;
+        --update|-u|update)          get_metadata; mode_update; exit 0 ;;
+        --list|-l|list)              mode_list; exit 0 ;;
+        --uninstall|--remove|remove) mode_uninstall; exit 0 ;;
+        "")                          ;; # interactive mode
+        *)
+            echo -e "${C_RED}Unknown option: $1${C_RESET}"
+            show_help
+            ;;
+    esac
+
+    show_header
     get_metadata
+    echo ""
     handle_input
     execute_tasks
 }
+
 main "$@"
 EOF
 )
