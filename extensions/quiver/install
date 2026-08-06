@@ -1,8 +1,6 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    set -e
-
     VERSION="1.0.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
 
@@ -292,6 +290,9 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local kept_branches=()
         local removed_count=0
 
+        # Get the full list of merged branches once
+        local merged_list=$(git branch --merged "origin/$main_branch" 2>/dev/null | sed 's/^[* ]*//')
+
         for b in "${branches[@]}"; do
             # Never remove main branch
             if [ "$b" == "$main_branch" ]; then
@@ -302,21 +303,28 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             local is_merged=false
             local reason=""
 
-            # Check if local branch exists
+            # Check 1: Branch no longer exists locally
             if ! git rev-parse --verify "$b" > /dev/null 2>&1; then
-                is_merged=true
-                reason="branch no longer exists locally"
-            # BUG FIX #1: Use ONLY git branch --merged and merge-base --is-ancestor
+                # Also check if it exists on remote
+                if ! git ls-remote --heads origin "$b" 2>/dev/null | grep -q "$b"; then
+                    is_merged=true
+                    reason="branch no longer exists locally or on remote"
+                else
+                    kept_branches+=("$b")
+                    continue
+                fi
+            # Check 2: Is ancestor of main (all commits are in main)
             elif git merge-base --is-ancestor "$b" "origin/$main_branch" 2>/dev/null; then
                 is_merged=true
-                reason="fully merged into origin/$main_branch (ancestor check)"
-            elif git branch --merged "origin/$main_branch" 2>/dev/null | grep -qw "$b"; then
+                reason="all commits merged into $main_branch"
+            # Check 3: Listed in git branch --merged
+            elif echo "$merged_list" | grep -qxF "$b"; then
                 is_merged=true
-                reason="listed in 'git branch --merged origin/$main_branch'"
+                reason="listed as merged into $main_branch"
             fi
 
             if [ "$is_merged" = true ]; then
-                echo -e "${YELLOW}  Removed: $b${NC} — $reason"
+                echo -e "  ${RED}✗${NC} ${b} ${CYAN}(${reason})${NC}"
                 removed_count=$((removed_count + 1))
             else
                 kept_branches+=("$b")
@@ -328,7 +336,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         if [ $removed_count -eq 0 ]; then
             echo -e "${GREEN}No merged branches found in quiver.${NC}"
         else
-            echo -e "${GREEN}Removed $removed_count merged branch(es) from quiver.${NC}"
+            echo -e "${GREEN}✓ Removed $removed_count merged branch(es) from quiver.${NC}"
         fi
     }
 
