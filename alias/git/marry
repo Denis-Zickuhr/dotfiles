@@ -1,7 +1,8 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m";
+    VERSION="1.0.0"
+    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
 
     show_help() {
         cat <<-MSG
@@ -11,32 +12,70 @@ Usage: git marry -b <branch-name> [-p <pattern>] [-f]
     -p, --pattern <path>    File patterns to add (defaults to "src")
     -f, --force             Push without confirmation
     -h, --help              Show help
+    -v, --version           Show version
 MSG
     }
 
-    fail() {
-        local current_br=$(git rev-parse --abbrev-ref HEAD)
+    # abort() — real error during the automated flow, needs full cleanup
+    abort() {
         echo -e "${RED}Error detected. Cleaning up...${NC}"
+
+        local current_br
+        current_br=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
         git reset --mixed >/dev/null 2>&1
         git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
 
-        if [ "$current_br" != "$ORIGINAL_BRANCH" ]; then
+        if [ -n "$current_br" ] && [ "$current_br" != "$ORIGINAL_BRANCH" ]; then
             git branch -D "$current_br" >/dev/null 2>&1
         fi
 
-        git stash pop >/dev/null 2>&1
+        # Only pop stash if we actually pushed one in this run
+        if [ "$STASH_PUSHED" = true ]; then
+            git stash pop >/dev/null 2>&1
+        fi
+
         return 1
     }
 
-    marry() {
-        git stash push -u -m "marry_temp_stash" || return 1
-        git fresh || return 1
-        git checkout -b "$BRANCH_NAME" || return 1
+    # decline() — user chose not to push; preserve all work, just skip push
+    decline() {
+        echo -e "\n${YELLOW}Push skipped.${NC}"
+        echo -e "Branch ${GREEN}$BRANCH_NAME${NC} and commit are preserved locally."
+        echo ""
+        read -p "Revert changes and delete branch? (y/n): " revert_confirm
+        if [[ "$revert_confirm" =~ ^[Yy](es)?$ ]]; then
+            echo -e "${YELLOW}Reverting...${NC}"
+            git reset --mixed >/dev/null 2>&1
+            git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
+            git branch -D "$BRANCH_NAME" >/dev/null 2>&1
+            if [ "$STASH_PUSHED" = true ]; then
+                git stash pop >/dev/null 2>&1
+            fi
+            echo -e "${GREEN}Reverted. Back on ${ORIGINAL_BRANCH}.${NC}"
+        else
+            echo -e "${CYAN}Staying on branch ${GREEN}$BRANCH_NAME${CYAN}. No push was made.${NC}"
+        fi
+    }
 
-        if ! git stash pop; then
-            fail
-            return 1
+    marry() {
+        STASH_PUSHED=false
+
+        # Only stash if there is something to stash (dirty working tree)
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+            git stash push -u -m "marry_temp_stash" || return 1
+            STASH_PUSHED=true
+        fi
+
+        git fresh || { abort; return 1; }
+        git checkout -b "$BRANCH_NAME" || { abort; return 1; }
+
+        if [ "$STASH_PUSHED" = true ]; then
+            if ! git stash pop; then
+                abort
+                return 1
+            fi
+            STASH_PUSHED=false  # stash consumed, no longer needs pop on cleanup
         fi
 
         for pattern in $ADD_PATTERNS; do
@@ -44,12 +83,14 @@ MSG
         done
 
         if ! git cbn; then
-            fail
+            abort
             return 1
         fi
 
-        local commit_msg=$(git log -1 --pretty=%B)
-        local files=$(git diff --name-only HEAD~1)
+        local commit_msg
+        local files
+        commit_msg=$(git log -1 --pretty=%B)
+        files=$(git diff --name-only HEAD~1)
 
         if [ "$FORCE_PUSH" = true ]; then
             git push -u origin "$BRANCH_NAME"
@@ -66,29 +107,33 @@ MSG
             if [[ "$confirm" =~ ^[Yy](es)?$ ]]; then
                 git push -u origin "$BRANCH_NAME"
                 if git config --get alias.quiver > /dev/null 2>&1; then
-                  git quiver -a "$BRANCH_NAME"
+                    git quiver -a "$BRANCH_NAME"
                 fi
             else
-                fail
+                decline
             fi
         fi
     }
 
-    BRANCH_NAME=""; ADD_PATTERNS=""; FORCE_PUSH=false;
+    if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
+    fi
+
+    BRANCH_NAME=""; ADD_PATTERNS=""; FORCE_PUSH=false
     ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
     while [ "$#" -gt 0 ]; do
         case $1 in
-            -h|--help) show_help; return 0;;
-            -b|--branch) BRANCH_NAME="$2"; shift;;
-            -p|--pattern) ADD_PATTERNS="$ADD_PATTERNS $2"; shift;;
-            -f|--force) FORCE_PUSH=true;;
-            *) shift;;
+            -h|--help) show_help; exit 0;;
+            -v|--version) echo "git marry v$VERSION"; exit 0;;
+            -b|--branch) BRANCH_NAME="$2"; shift 2;;
+            -p|--pattern) ADD_PATTERNS="$ADD_PATTERNS $2"; shift 2;;
+            -f|--force) FORCE_PUSH=true; shift;;
+            *) echo -e "${RED}Error: Unknown argument: $1${NC}"; show_help; exit 1;;
         esac
-        shift
     done
 
-    [ -z "$BRANCH_NAME" ] && { echo "Branch name required"; return 1; }
+    [ -z "$BRANCH_NAME" ] && { echo -e "${RED}Error: Branch name required. Use -b <name>${NC}"; exit 1; }
     [ -z "$ADD_PATTERNS" ] && ADD_PATTERNS="src"
 
     marry

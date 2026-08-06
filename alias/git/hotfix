@@ -3,12 +3,10 @@
 SCRIPT_CONTENT=$(cat <<'EOF'
 
     # colors
-    GREEN="\033[0;32m";
-    YELLOW="\033[1;33m";
-    CYAN="\033[0;36m";
-    RED="\033[0;31m"; NC="\033[0m";
+    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
 
     # globals
+    VERSION="1.0.0"
     SOURCE_BRANCH=""
     TARGET_BRANCHES_RAW=""
     FORCE_PUSH=false
@@ -29,6 +27,7 @@ Automates hotfix creation and PR generation.
     -i, --into <targets>    (Required) Comma-separated|Space list of target branches.
     --force                 Force pushes the branch creation over origin.
     -p, --picky             Allows the commits to be individually picked.
+    -v, --version           Display version information.
     -h, --help              Display this help message.
 
 Example:
@@ -48,11 +47,29 @@ MSG
     rollback() {
         echo -e "\n${YELLOW}Aborted. Rolling back changes...${NC}";
         if [[ -n "$START_BRANCH" ]]; then git checkout "$START_BRANCH" &> /dev/null; fi
+
+        local pushed_branches=()
+
         for b in "${CREATED_BRANCHES[@]}"; do
+            if git ls-remote --heads origin "$b" 2>/dev/null | grep -q "$b"; then
+                pushed_branches+=("$b")
+            fi
             log "Deleting local branch: $b"
             git branch -D "$b" &> /dev/null
         done
-        echo -e "${GREEN}Rollback complete. You are back on ${START_BRANCH}.${NC}"
+
+        if [[ ${#pushed_branches[@]} -gt 0 ]]; then
+            echo -e "\n${YELLOW}[WARNING]${NC} The following branches were already pushed to remote and were ${RED}NOT${NC} removed automatically:"
+            for rb in "${pushed_branches[@]}"; do
+                echo -e "  ${CYAN}-${NC} $rb"
+            done
+            echo -e "\n${YELLOW}To remove them manually, run:${NC}"
+            for rb in "${pushed_branches[@]}"; do
+                echo -e "  git push origin --delete $rb"
+            done
+        fi
+
+        echo -e "\n${GREEN}Rollback complete. You are back on ${START_BRANCH}.${NC}"
         exit 1
     }
 
@@ -96,6 +113,10 @@ MSG
                           TARGET_BRANCHES_RAW="${TARGET_BRANCHES_RAW} $2"
                           shift
                       done
+                      ;;
+                  -v|--version)
+                      echo "git hotfix v$VERSION"
+                      exit 0
                       ;;
                   -h|--help)
                       show_help
@@ -177,7 +198,7 @@ MSG
     }
 
     process_hotfix_targets() {
-        # Garante que as variáveis necessárias existam ou recebam valores padrão
+        # Ensure necessary variables exist or receive default values
         local source_branch="${SOURCE_BRANCH:-}"
         local force_push="${FORCE_PUSH:-}"
 
@@ -205,7 +226,7 @@ MSG
 
             CREATED_BRANCHES+=("$hotfix_b")
 
-            # Aplicação dos commits (Cherry-pick)
+            # Cherry-pick commits
             for item in "${SELECTED_COMMITS[@]}"; do
                 local hash msg
                 IFS='|' read -r hash msg <<< "$item"
@@ -228,7 +249,7 @@ MSG
                 error "Push failed for $hotfix_b"; rollback; return 1;
             fi
 
-            # Geração do link de PR
+            # Generate PR link
             local link
             link=$(generate_pr_link "$into" "$hotfix_b")
             PR_LINKS+=("Target [$into]: $link")
@@ -262,7 +283,7 @@ MSG
         for link in "${PR_LINKS[@]}"; do
             echo -e "$link"
         done
-  }
+    }
 
     parse_args "$@"
     validate_inputs

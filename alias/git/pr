@@ -1,59 +1,114 @@
-git config --global alias.pr '!f() {
-  base="";
-  list_all="false";
+#!/bin/bash
 
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -b)
-        base="$2";
-        shift 2
-        ;;
-      -a|--all)
-        list_all="true";
-        shift
-        ;;
-      *)
-        echo "Uso: git pr [-a|--all] [-b <base_branch>]";
-        return 1
-        ;;
-    esac
-  done
+SCRIPT_CONTENT=$(cat <<'EOF'
+    VERSION="1.0.0"
+    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
 
-  if [ "$list_all" = "true" ]; then
-    echo "Listando todos os PRs do seu usuário:";
-    gh pr list --author "@me" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\"";
-    return 0;
-  fi
+    show_help() {
+        echo -e "${CYAN}git pr${NC} - List pull requests for the current branch or create new ones"
+        echo ""
+        echo -e "${YELLOW}Usage:${NC} git pr [options]"
+        echo ""
+        echo -e "${YELLOW}Options:${NC}"
+        echo "  -a, --all          List all PRs authored by you"
+        echo "  -b <branch>        Specify base branch (defaults to repo default branch)"
+        echo "  -h, --help         Show this help message"
+        echo "  -v, --version      Show version"
+        echo ""
+        echo -e "${YELLOW}Examples:${NC}"
+        echo "  git pr             Show PRs for current branch"
+        echo "  git pr -a          Show all your PRs"
+        echo "  git pr -b main     Use 'main' as base branch for compare URL"
+    }
 
-  b=$(git rev-parse --abbrev-ref HEAD);
-  prs=$(gh pr list --head "$b" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\"");
+    generate_compare_url() {
+        local base_branch="$1"
+        local head_branch="$2"
+        local remote_url repo_path
 
-  if [ -n "$prs" ]; then
-    echo "$prs";
-    open_prs=$(gh pr list --head "$b" --state open --json number --jq ". | length");
-    if [ "$open_prs" -eq 0 ]; then
-      echo "";
-      echo "Nenhum PR aberto. Criar novo PR:";
-      if [ -z "$base" ]; then
-        default_branch=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name);
-      else
-        default_branch="$base";
-      fi;
-      remote_url=$(git config --get remote.origin.url);
-      repo_path=$(echo "$remote_url" | sed -E "s#(git@github.com:|https://github.com/)([^.]+)(.git)?#\2#");
-      echo "https://github.com/$repo_path/compare/$default_branch...$b?expand=1";
-    fi;
-  else
-    echo "Nenhum pull request encontrado para a branch $b";
-    echo "Criar novo pull request?";
-    if [ -z "$base" ]; then
-      default_branch=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name);
+        remote_url=$(git config --get remote.origin.url)
+        repo_path=$(echo "$remote_url" | sed -E "s#(git@github.com:|https://github.com/)([^.]+)(\.git)?#\2#")
+        echo "https://github.com/$repo_path/compare/$base_branch...$head_branch?expand=1"
+    }
+
+    get_base_branch() {
+        local base="$1"
+        if [ -z "$base" ]; then
+            gh repo view --json defaultBranchRef --jq .defaultBranchRef.name
+        else
+            echo "$base"
+        fi
+    }
+
+    base=""
+    list_all="false"
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--version)
+                echo "git pr v$VERSION"
+                exit 0
+                ;;
+            -b)
+                base="$2"
+                shift 2
+                ;;
+            -a|--all)
+                list_all="true"
+                shift
+                ;;
+            *)
+                echo -e "${RED}Error: Unknown option '$1'${NC}"
+                echo "Use 'git pr --help' for usage information."
+                exit 1
+                ;;
+        esac
+    done
+
+    if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        echo -e "${RED}Error: Not in a git repository.${NC}"
+        exit 1
+    fi
+
+    if ! command -v gh > /dev/null 2>&1; then
+        echo -e "${RED}Error: GitHub CLI (gh) is not installed.${NC}"
+        echo -e "Install it from: ${CYAN}https://cli.github.com/${NC}"
+        exit 1
+    fi
+
+    if [ "$list_all" = "true" ]; then
+        echo -e "${GREEN}Listing all PRs authored by you:${NC}"
+        gh pr list --author "@me" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\""
+        exit 0
+    fi
+
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    prs=$(gh pr list --head "$branch" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\"")
+
+    if [ -n "$prs" ]; then
+        echo "$prs"
+        open_prs=$(gh pr list --head "$branch" --state open --json number --jq ". | length")
+        if [ "$open_prs" -eq 0 ]; then
+            echo ""
+            echo -e "${YELLOW}No open PRs found. Create a new one:${NC}"
+            default_branch=$(get_base_branch "$base")
+            echo -e "${CYAN}$(generate_compare_url "$default_branch" "$branch")${NC}"
+        fi
     else
-      default_branch="$base";
-    fi;
-    remote_url=$(git config --get remote.origin.url);
-    repo_path=$(echo "$remote_url" | sed -E "s#(git@github.com:|https://github.com/)([^.]+)(.git)?#\2#");
-    echo "https://github.com/$repo_path/compare/$default_branch...$b?expand=1";
-  fi;
-}; f'
+        echo -e "${YELLOW}No pull requests found for branch '${branch}'.${NC}"
+        echo -e "Create a new pull request:"
+        default_branch=$(get_base_branch "$base")
+        echo -e "${CYAN}$(generate_compare_url "$default_branch" "$branch")${NC}"
+    fi
+EOF
+)
 
+ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
+
+git config --global alias.pr "!f() {
+    bash -c '$ESCAPED_CODE' -- \"\$@\"
+}; f"
