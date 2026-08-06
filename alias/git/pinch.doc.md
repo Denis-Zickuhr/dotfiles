@@ -1,24 +1,87 @@
-# Opens all files modified in the current branch since diverging from upstream
+# Opens, edits, reverts, or amends files changed since the fork point
 
 ## Description
-A specialized utility for reviewing work within a feature branch. It identifies exactly which files have changed since you branched off from the upstream (usually `main`), filters out noisy dependency files, and opens the relevant set in your editor. It can also "pinch" your history by squashing commits via a soft reset.
+A multi-mode tool for working with files that changed relative to upstream.
+Opens files in your editor, supports intelligent amending into the last commit,
+reverting specific files to upstream state, and soft-resetting for squash workflows.
 
 ## Usage
-$ git pinch [options]
+```
+$ git pinch              # Open all changed files
+$ git pinch -a           # Edit mode: open, edit, amend into last commit
+$ git pinch -r           # Revert all changed files to upstream state
+$ git pinch -r src/f.ts  # Revert a specific file
+$ git pinch -k           # Open files, then soft-reset (squash)
+$ git pinch -s -a        # Select which files to edit + amend
+```
+
+## Modes
+
+### Default (open)
+Opens all changed files in the configured editor. No side effects.
+
+### Amend (`-a, --amend`)
+1. Opens changed files in editor (with `--wait`)
+2. After closing, detects modified files
+3. Asks to amend changes into the last commit (`--no-edit`)
+
+Ideal for quick fixes on existing commits without creating new ones.
+
+### Revert (`-r, --revert [file]`)
+1. Shows files that will be reverted
+2. Asks for confirmation
+3. Checks out the file(s) from the merge-base, restoring upstream state
+4. Changes are staged — commit when ready
+
+Use without argument to revert all, or pass a specific file path.
+
+### Keep (`-k, --keep`)
+Opens files first, then soft-resets all commits back to the merge base.
+Changes remain staged for recommitting (squash workflow).
 
 ## Options
--e, --editor <tool>    Override the detected git editor.
--k, --keep             Perform a **soft reset** to the merge base after opening files. Useful for squashing multiple commits into a single state.
--u, --upstream <br>    Manually specify the upstream branch to compare against (defaults to origin/HEAD).
--h, --help             (Internal bash logic)
+| Flag | Description |
+|------|-------------|
+| `-a, --amend` | Amend mode: edit then amend last commit |
+| `-r, --revert [file]` | Revert mode: restore files to upstream state |
+| `-k, --keep` | Open + soft-reset to merge base |
+| `-s, --select` | Interactive file selector before any mode |
+| `-e, --editor <ed>` | Override auto-detected editor |
+| `-u, --upstream <br>` | Override upstream branch (default: auto from origin/HEAD) |
+| `-h, --help` | Show help |
+| `-v, --version` | Show version |
 
-## Logic
-1. **Divergence Check:** Uses `git merge-base` to find the exact point where your branch diverged from the upstream.
-2. **Noise Filtering:** Lists changed files but ignores `vendor/`, `node_modules/`, `composer.lock`, and other generated/dependency files.
-3. **Batch Open:** Passes the filtered list to your editor.
-4. **Soft Reset:** If `--keep` is used, it resets the branch head to the divergence point while keeping all changes staged in the index.
+## Editor Resolution
+1. `git config core.editor`
+2. `$EDITOR` environment variable
+3. `code` (if available)
+4. `vim`
 
-## Example
-$ git pinch --keep
-> 1. Opens all files you worked on in this branch.
-> 2. Resets your branch history so you can make a single "clean" commit of the entire feature.
+## Examples
+
+### Fix a typo in existing work
+```bash
+$ git pinch -a
+# Editor opens with all changed files
+# Fix the typo, save, close
+# → "Amend these into the last commit? [Y/n]" → y
+# ✓ Last commit amended
+```
+
+### Undo changes to a specific file
+```bash
+$ git pinch -r src/config.ts
+# ↩ src/config.ts
+# "Continue? [y/N]" → y
+# ✓ File reverted to upstream state (staged)
+```
+
+### Cherry-pick which files to work with
+```bash
+$ git pinch -s
+# 1) src/api.ts
+# 2) src/model.ts
+# 3) tests/api.test.ts
+# > 1 3
+# Opens only src/api.ts and tests/api.test.ts
+```
