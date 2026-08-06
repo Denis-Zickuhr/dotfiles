@@ -11,10 +11,8 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     # --- Quiver commands registry ---
     # remote: can run targeting any branch without checkout
-    # local: needs to be on the branch (will auto-switch, run, switch back)
     QUIVER_CMDS_REMOTE="ctx pr"
-    QUIVER_CMDS_LOCAL="sync wip cbn standup"
-    QUIVER_COMMANDS="$QUIVER_CMDS_REMOTE $QUIVER_CMDS_LOCAL"
+    QUIVER_COMMANDS="$QUIVER_CMDS_REMOTE"
 
     get_quiver() {
         git config --local --get-all quiver.branch 2>/dev/null || echo ""
@@ -76,27 +74,15 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo -e "${YELLOW}Commands (usable in interactive mode):${NC}"
         echo "  ctx [n]                   Show branch context (ticket + PR)"
         echo "  pr [n]                    Show/create pull request"
-        echo "  sync [n]                  Sync branch with upstream"
-        echo "  standup [n]               Show recent commits"
-        echo "  wip [n]                   Create WIP commit"
-        echo "  cbn [n]                   Commit from branch name"
         echo ""
         echo -e "${GRAY}  [n] = optional branch index. Without it, runs on current branch.${NC}"
-        echo -e "${GRAY}  Example: 'ctx 3' runs git ctx on branch #3 without switching to it.${NC}"
+        echo -e "${GRAY}  Example: 'ctx 3' shows context of branch #3 without switching.${NC}"
     }
 
     is_quiver_command() {
         local input=$1
         for cmd in $QUIVER_COMMANDS; do
             [ "$cmd" = "$input" ] && return 0
-        done
-        return 1
-    }
-
-    is_remote_command() {
-        local cmd=$1
-        for c in $QUIVER_CMDS_REMOTE; do
-            [ "$c" = "$cmd" ] && return 0
         done
         return 1
     }
@@ -148,24 +134,13 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
             git "$cmd" $cmd_args
             echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
-        elif is_remote_command "$cmd"; then
-            # Remote command: temporarily override branch context
-            echo -e "  ${CYAN}git $cmd $cmd_args${NC} ${GRAY}on ${target_branch}${NC}"
-            echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
-            # For ctx/pr: switch, run, switch back silently
-            git checkout "$target_branch" > /dev/null 2>&1
-            git "$cmd" $cmd_args
-            git checkout "$current" > /dev/null 2>&1
-            echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
         else
-            # Local command: switch, run, switch back
+            # Switch, run, switch back (silently)
             echo -e "  ${CYAN}git $cmd $cmd_args${NC} ${GRAY}on ${target_branch}${NC}"
             echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
-            manage_stash_push
             git checkout "$target_branch" > /dev/null 2>&1
             git "$cmd" $cmd_args
             git checkout "$current" > /dev/null 2>&1
-            manage_stash_pop "$current"
             echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
         fi
     }
@@ -262,8 +237,8 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
         # Footer
         echo -e "${GRAY}  ──────────────────────────────────────────${NC}"
-        echo -e "  ${GRAY}${#branches[@]} branches │ try: ctx, pr, sync, wip, cbn, standup${NC}"
-        echo -e "  ${GRAY}[n] switch │ [cmd] run │ [cmd n] run on branch │ [h] help${NC}"
+        echo -e "  ${GRAY}${#branches[@]} branches │ commands: ctx, pr${NC}"
+        echo -e "  ${GRAY}[n] switch │ [cmd n] inspect branch │ [h] help${NC}"
         echo ""
 
         # Input
@@ -318,14 +293,11 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             echo -e "    ${CYAN}a${NC}            Add current branch to quiver"
             echo -e "    ${CYAN}q${NC}            Quit"
             echo ""
-            echo -e "  ${YELLOW}Commands (run on current or target branch):${NC}"
-            echo -e "    ${CYAN}ctx${NC}          Branch context (ticket + PR)"
-            echo -e "    ${CYAN}ctx 3${NC}        Run ctx on branch #3"
-            echo -e "    ${CYAN}pr${NC}           Pull request status"
-            echo -e "    ${CYAN}sync${NC}         Sync with upstream"
-            echo -e "    ${CYAN}wip${NC}          WIP commit"
-            echo -e "    ${CYAN}cbn${NC}          Commit from branch name"
-            echo -e "    ${CYAN}standup${NC}      Recent commits"
+            echo -e "  ${YELLOW}Commands (inspect any branch):${NC}"
+            echo -e "    ${CYAN}ctx${NC}          Context of current branch"
+            echo -e "    ${CYAN}ctx 3${NC}        Context of branch #3"
+            echo -e "    ${CYAN}pr${NC}           PR of current branch"
+            echo -e "    ${CYAN}pr 2${NC}         PR of branch #2"
             echo ""
 
         else
