@@ -94,14 +94,24 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local run_all=false
         local cmd_args=""
 
-        # Parse: "ctx ." means run ctx on ALL branches
-        # Parse: "ctx 3" means run ctx on branch at index 3
-        # Parse: "ctx" means run ctx on current branch
-        if [[ "${1:-}" == "." ]]; then
-            run_all=true
-            shift
-        elif [[ "${1:-}" =~ ^[0-9]+$ ]]; then
-            local idx=$(($1 - 1))
+        # Scan all args: extract . (all) or index, rest becomes cmd_args
+        local remaining=()
+        local index_found=""
+        for arg in "$@"; do
+            if [ "$arg" = "." ] && [ "$run_all" = false ] && [ -z "$index_found" ]; then
+                run_all=true
+            elif [[ "$arg" =~ ^[0-9]+$ ]] && [ "$run_all" = false ] && [ -z "$index_found" ]; then
+                index_found="$arg"
+            else
+                remaining+=("$arg")
+            fi
+        done
+
+        cmd_args="${remaining[*]}"
+
+        # Resolve target branch from index
+        if [ -n "$index_found" ]; then
+            local idx=$((index_found - 1))
             local branches=($(get_quiver))
             local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
             main_branch=${main_branch:-main}
@@ -119,10 +129,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
                 echo -e "  ${RED}Invalid index.${NC}"
                 return 1
             fi
-            shift
         fi
-
-        cmd_args="$*"
 
         if ! git config --global --get "alias.$cmd" > /dev/null 2>&1; then
             echo -e "  ${RED}'git $cmd' is not installed.${NC}"
@@ -144,7 +151,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
                 [ "$b" == "$main_branch" ] && continue
 
                 echo ""
-                echo -e "  ${GRAY}[$display_num]${NC} ${CYAN}git $cmd${NC} ${GRAY}on ${b}${NC}"
+                echo -e "  ${GRAY}[$display_num]${NC} ${CYAN}git $cmd $cmd_args${NC} ${GRAY}on ${b}${NC}"
                 echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
                 if [ "$b" = "$current" ]; then
                     git "$cmd" $cmd_args
