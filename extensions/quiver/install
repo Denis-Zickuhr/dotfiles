@@ -141,6 +141,12 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
         # Run on ALL branches
         if [ "$run_all" = true ]; then
+            # Block commands that don't make sense with .
+            if [ "$cmd" = "hotfix" ]; then
+                echo -e "  ${RED}hotfix doesn't support '.'. Use with a specific index.${NC}"
+                return 1
+            fi
+
             local branches=($(get_quiver))
             local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
             main_branch=${main_branch:-main}
