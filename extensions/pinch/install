@@ -99,13 +99,13 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local all_files=$1
         local i=1
 
-        echo -e "${CYAN}Select files (space-separated numbers, or 'a' for all):${NC}"
-        echo ""
+        echo -e "${CYAN}Select files (space-separated numbers, or 'a' for all):${NC}" >&2
+        echo "" >&2
         while IFS= read -r f; do
-            echo -e "  ${GRAY}$i)${NC} $f"
+            echo -e "  ${GRAY}$i)${NC} $f" >&2
             i=$((i+1))
         done <<< "$all_files"
-        echo ""
+        echo "" >&2
 
         local choice
         read -p "> " choice < /dev/tty
