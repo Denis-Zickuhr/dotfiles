@@ -43,13 +43,18 @@ fi
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 if [[ -z "$TARGET_BRANCH" ]]; then
-    if git rev-parse --verify origin/main > /dev/null 2>&1; then
-        TARGET_BRANCH="main"
-    elif git rev-parse --verify origin/master > /dev/null 2>&1; then
-        TARGET_BRANCH="master"
-    else
-        echo -e "${RED}Error: Could not detect default branch (neither origin/main nor origin/master exist).${NC}"
-        exit 1
+    TARGET_BRANCH=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+    if [[ -z "$TARGET_BRANCH" ]]; then
+        if git rev-parse --verify origin/main > /dev/null 2>&1; then
+            TARGET_BRANCH="main"
+        elif git rev-parse --verify origin/master > /dev/null 2>&1; then
+            TARGET_BRANCH="master"
+        elif git rev-parse --verify origin/develop > /dev/null 2>&1; then
+            TARGET_BRANCH="develop"
+        else
+            echo -e "${RED}Error: Could not detect default branch.${NC}"
+            exit 1
+        fi
     fi
 fi
 
