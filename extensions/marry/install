@@ -251,14 +251,15 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         fi
 
         # Commit
+        local verify_flag=""
+        [ "$NO_VERIFY" = true ] && verify_flag="--no-verify"
+
         if [ -n "$CUSTOM_MESSAGE" ]; then
-            git commit -m "$CUSTOM_MESSAGE" > /dev/null 2>&1
+            git commit $verify_flag -m "$CUSTOM_MESSAGE" > /dev/null 2>&1
         else
             local scope_flag=""
-            if [ -n "$SCOPE" ]; then
-                scope_flag="-s $SCOPE"
-            fi
-            if ! git cbn $scope_flag; then abort; return 1; fi
+            [ -n "$SCOPE" ] && scope_flag="-s $SCOPE"
+            if ! git cbn $scope_flag $verify_flag; then abort; return 1; fi
         fi
 
         local commit_msg=$(git log -1 --pretty=%B | head -n1)
@@ -442,6 +443,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     CUSTOM_MESSAGE=""
     SCOPE=""
     NO_PR=false
+    NO_VERIFY=false
     ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
     while [ "$#" -gt 0 ]; do
@@ -456,6 +458,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             -m|--message)  CUSTOM_MESSAGE="$2"; shift 2;;
             -f|--force)    FORCE_PUSH=true; shift;;
             --no-pr)       NO_PR=true; shift;;
+            --no-verify)   NO_VERIFY=true; shift;;
             *)
                 echo -e "${RED}Unknown: $1${NC}"
                 show_help; exit 1;;

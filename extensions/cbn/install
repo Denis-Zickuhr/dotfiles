@@ -84,6 +84,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     OMIT_PREFIX=false
     FORCED_SCOPE=""
     NO_SCOPE=false
+    NO_VERIFY=false
 
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -101,6 +102,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
           FORCED_SCOPE="$2"; shift; shift;;
         -op|--omit-prefix) OMIT_PREFIX=true; shift;;
         --no-scope) NO_SCOPE=true; shift;;
+        --no-verify) NO_VERIFY=true; shift;;
         *) error_exit "Unknown option: $1"; exit 1;;
       esac
     done
@@ -183,7 +185,9 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     COMMIT_MESSAGE="${COMMIT_PREFIX}${TYPE_PART}: ${MSG_BODY}"
     echo -e "${GREEN}Running:${NC} git commit -m \"${CYAN}${COMMIT_MESSAGE}${NC}\""
-    git commit -m "$COMMIT_MESSAGE"
+    local verify=""
+    [ "$NO_VERIFY" = true ] && verify="--no-verify"
+    git commit $verify -m "$COMMIT_MESSAGE"
 EOF
 )
 
