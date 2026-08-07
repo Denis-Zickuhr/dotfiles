@@ -94,10 +94,10 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local run_all=false
         local cmd_args=""
 
-        # Parse: "ctx *" means run ctx on ALL branches
+        # Parse: "ctx ." means run ctx on ALL branches
         # Parse: "ctx 3" means run ctx on branch at index 3
         # Parse: "ctx" means run ctx on current branch
-        if [[ "${1:-}" == "*" ]]; then
+        if [[ "${1:-}" == "." ]]; then
             run_all=true
             shift
         elif [[ "${1:-}" =~ ^[0-9]+$ ]]; then
