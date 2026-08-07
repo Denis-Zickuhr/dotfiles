@@ -1,0 +1,31 @@
+#!/bin/bash
+# marry template: changelog
+# Structured PR for projects that maintain changelogs.
+#
+# Usage:
+#   bash changelog
+#
+# Result:
+#   ## {title}
+#   
+#   ### Tipo de mudança
+#   (asks user, default from branch type)
+#   
+#   ### O que mudou?
+#   (asks user)
+#   
+#   ### Breaking changes?
+#   (asks user, default: Nenhum)
+#   
+#   ### Atividade
+#   {ticket}
+
+set -e
+GREEN="\033[0;32m"; CYAN="\033[0;36m"; NC="\033[0m"
+
+TEMPLATE='## {title}\n\n### Tipo de mudança\n{{ask:-"feature":"Tipo (feature/bugfix/refactor/chore)?"}}\n\n### O que mudou?\n{{ask:"Descreva as alterações principais"}}\n\n### Breaking changes?\n{{ask:-"Nenhum":"Há breaking changes?"}}\n\n### Atividade\n{ticket}'
+
+git config --local marry.template "$TEMPLATE"
+
+echo -e "${GREEN}✓ marry template set: changelog${NC}"
+echo -e "  ${CYAN}Includes type, description, breaking changes, and ticket.${NC}"

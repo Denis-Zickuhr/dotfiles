@@ -28,15 +28,21 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "    git config --local marry.template \"<template>\""
         echo "    git config --global marry.template \"<template>\""
         echo ""
-        echo "  Template variables:"
+        echo "  Static variables:"
         echo "    {title}     Commit message / PR title"
         echo "    {ticket}    Ticket URL (from ctx provider)"
         echo "    {branch}    Branch name"
         echo "    {prefix}    Ticket prefix (e.g., MAG-1234)"
         echo ""
+        echo "  Interactive prompts:"
+        echo "    {{ask:\"Question?\"}}              Asks user, no default"
+        echo "    {{ask:-\"default\":\"Question?\"}}   Asks user, enter accepts default"
+        echo ""
         echo "  Default template:"
-        echo "    ## Correções (issue)"
-        echo "    {ticket}"
+        echo "    ## Correções (issue)\n{ticket}"
+        echo ""
+        echo "  Example custom template:"
+        echo "    ## {title}\n\n### Atividades\n{ticket}\n\n### Descrição\n{{ask:\"Descreva a mudança\"}}\n\n### Testado?\n{{ask:-\"Sim\":\"Foi testado?\"}}"
         echo ""
         echo -e "${YELLOW}Flow:${NC}"
         echo "  1. Stash → Fresh (if needed) → Create branch"
@@ -96,7 +102,55 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local branch=$4
         local prefix=$5
 
-        echo -e "$tmpl" | sed "s|{title}|$title|g;s|{ticket}|$ticket|g;s|{branch}|$branch|g;s|{prefix}|$prefix|g"
+        # First pass: replace static variables
+        local rendered=$(echo -e "$tmpl" | sed "s|{title}|$title|g;s|{ticket}|$ticket|g;s|{branch}|$branch|g;s|{prefix}|$prefix|g")
+
+        # Second pass: process {{ask}} tags
+        # Format: {{ask:"question"}} or {{ask:-"default":"question"}}
+        # Default can reference resolved vars via text
+        local final=""
+        while IFS= read -r line; do
+            if echo "$line" | grep -q '{{ask'; then
+                # Extract ask tag content
+                local tag=$(echo "$line" | grep -oP '\{\{ask[^}]*\}\}')
+                local before=$(echo "$line" | sed "s|$tag.*||")
+                local after=$(echo "$line" | sed "s|.*$tag||")
+
+                local question=""
+                local default_val=""
+
+                if echo "$tag" | grep -qP '^\{\{ask:-"[^"]*":"[^"]*"\}\}$'; then
+                    # Has default: {{ask:-"default":"question"}}
+                    default_val=$(echo "$tag" | sed 's/{{ask:-"//;s/":.*//')
+                    question=$(echo "$tag" | sed 's/.*":"//;s/"}}//')
+                elif echo "$tag" | grep -qP '^\{\{ask:-[^:]*:"[^"]*"\}\}$'; then
+                    # Default without quotes (variable-like): {{ask:-value:"question"}}
+                    default_val=$(echo "$tag" | sed 's/{{ask:-//;s/:".*//') 
+                    question=$(echo "$tag" | sed 's/.*:"//;s/"}}//')
+                elif echo "$tag" | grep -qP '^\{\{ask:"[^"]*"\}\}$'; then
+                    # No default: {{ask:"question"}}
+                    question=$(echo "$tag" | sed 's/{{ask:"//;s/"}}//')
+                fi
+
+                # Prompt user
+                local answer=""
+                if [ -n "$default_val" ]; then
+                    printf "  ${CYAN}$question${NC} ${GRAY}[$default_val]${NC}: " >&2
+                    read -r answer < /dev/tty
+                    answer="${answer:-$default_val}"
+                else
+                    printf "  ${CYAN}$question${NC}: " >&2
+                    read -r answer < /dev/tty
+                fi
+
+                final+="${before}${answer}${after}"$'\n'
+            else
+                final+="$line"$'\n'
+            fi
+        done <<< "$rendered"
+
+        # Remove trailing newline
+        echo "${final%$'\n'}"
     }
 
     is_fresh() {

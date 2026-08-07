@@ -1,0 +1,28 @@
+#!/bin/bash
+# marry template: detailed
+# Full PR template with interactive prompts for description and testing.
+#
+# Usage:
+#   bash detailed
+#
+# Result:
+#   ## {title}
+#   
+#   ### Atividades
+#   {ticket}
+#   
+#   ### Descrição
+#   (asks user)
+#   
+#   ### Testado?
+#   (asks user, default: Sim)
+
+set -e
+GREEN="\033[0;32m"; CYAN="\033[0;36m"; NC="\033[0m"
+
+TEMPLATE='## {title}\n\n### Atividades\n{ticket}\n\n### Descrição\n{{ask:"Descreva brevemente a mudança"}}\n\n### Testado?\n{{ask:-"Sim":"Foi testado manualmente?"}}'
+
+git config --local marry.template "$TEMPLATE"
+
+echo -e "${GREEN}✓ marry template set: detailed${NC}"
+echo -e "  ${CYAN}Includes interactive prompts for description and testing.${NC}"

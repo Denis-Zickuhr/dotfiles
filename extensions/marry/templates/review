@@ -1,0 +1,30 @@
+#!/bin/bash
+# marry template: review
+# PR template focused on code review with a checklist.
+#
+# Usage:
+#   bash review
+#
+# Result:
+#   ## {title}
+#   
+#   ### Contexto
+#   (asks user)
+#   
+#   ### Atividade
+#   {ticket}
+#   
+#   ### Checklist
+#   - [ ] Código testado
+#   - [ ] Sem console.log / var_dump
+#   - [ ] Migration necessária? (asks)
+
+set -e
+GREEN="\033[0;32m"; CYAN="\033[0;36m"; NC="\033[0m"
+
+TEMPLATE='## {title}\n\n### Contexto\n{{ask:"Contexto da mudança (por que foi feita?)"}}\n\n### Atividade\n{ticket}\n\n### Checklist\n- [ ] Código testado\n- [ ] Sem debug/log residual\n- [ ] {{ask:-"Não":"Migration necessária?"}}'
+
+git config --local marry.template "$TEMPLATE"
+
+echo -e "${GREEN}✓ marry template set: review${NC}"
+echo -e "  ${CYAN}Code review focused with context and checklist.${NC}"

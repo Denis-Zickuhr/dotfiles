@@ -1,0 +1,16 @@
+#!/bin/bash
+# marry template: minimal
+# Bare minimum — just title and ticket. No questions asked.
+#
+# Usage:
+#   bash minimal
+
+set -e
+GREEN="\033[0;32m"; CYAN="\033[0;36m"; NC="\033[0m"
+
+TEMPLATE='{title}\n\n{ticket}'
+
+git config --local marry.template "$TEMPLATE"
+
+echo -e "${GREEN}✓ marry template set: minimal${NC}"
+echo -e "  ${CYAN}Just title + ticket link. No prompts.${NC}"

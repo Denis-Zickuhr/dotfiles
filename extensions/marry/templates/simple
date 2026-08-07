@@ -1,0 +1,22 @@
+#!/bin/bash
+# marry template: simple
+# The default template — ticket link with minimal structure.
+#
+# Usage:
+#   bash simple
+#
+# Result:
+#   ## Correções (issue)
+#   https://zorders.atlassian.net/browse/MAG-1234
+
+set -e
+GREEN="\033[0;32m"; CYAN="\033[0;36m"; NC="\033[0m"
+
+TEMPLATE='## Correções (issue)\n{ticket}'
+
+git config --local marry.template "$TEMPLATE"
+
+echo -e "${GREEN}✓ marry template set: simple${NC}"
+echo -e "  ${CYAN}Preview:${NC}"
+echo -e "  ## Correções (issue)"
+echo -e "  {ticket}"
