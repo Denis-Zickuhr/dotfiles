@@ -140,6 +140,11 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             return 1
         fi
 
+        # Auto-inject --abort-on-fail for sync (prevents broken rebase state)
+        if [ "$cmd" = "sync" ]; then
+            cmd_args="--abort-on-fail $cmd_args"
+        fi
+
         local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
         # Run on ALL branches

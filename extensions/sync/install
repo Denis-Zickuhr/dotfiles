@@ -20,12 +20,14 @@ show_help() {
 
 USE_MERGE=false
 TARGET_BRANCH=""
+ABORT_ON_FAIL=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) show_help; exit 0;;
         -v|--version) echo "git sync v$VERSION"; exit 0;;
         --merge) USE_MERGE=true; shift;;
+        --abort-on-fail) ABORT_ON_FAIL=true; shift;;
         -b)
             if [[ -z "$2" || "$2" == -* ]]; then
                 echo -e "${RED}Error: -b requires a branch name.${NC}"; exit 1
@@ -75,6 +77,12 @@ if [[ "$USE_MERGE" == true ]]; then
     if git merge "origin/${TARGET_BRANCH}"; then
         echo -e "${GREEN}✔ Successfully merged origin/${TARGET_BRANCH} into ${CURRENT_BRANCH}.${NC}"
     else
+        if [[ "$ABORT_ON_FAIL" == true ]]; then
+            git merge --abort > /dev/null 2>&1
+            echo -e "${RED}✗ Conflict — merge aborted.${NC}"
+            if [[ "$STASHED" == true ]]; then git stash pop > /dev/null 2>&1; fi
+            exit 1
+        fi
         echo -e "${RED}✖ Merge conflict detected.${NC}"
         echo -e "${YELLOW}Resolve conflicts and then run:${NC}"
         echo -e "  git add <resolved-files>"
@@ -93,6 +101,12 @@ else
     if git rebase "origin/${TARGET_BRANCH}"; then
         echo -e "${GREEN}✔ Successfully rebased ${CURRENT_BRANCH} onto origin/${TARGET_BRANCH}.${NC}"
     else
+        if [[ "$ABORT_ON_FAIL" == true ]]; then
+            git rebase --abort > /dev/null 2>&1
+            echo -e "${RED}✗ Conflict — rebase aborted.${NC}"
+            if [[ "$STASHED" == true ]]; then git stash pop > /dev/null 2>&1; fi
+            exit 1
+        fi
         echo -e "${RED}✖ Rebase conflict detected.${NC}"
         echo -e "${YELLOW}To resolve:${NC}"
         echo -e "  1. Fix the conflicts in the listed files"
