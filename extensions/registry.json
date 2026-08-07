@@ -14,8 +14,8 @@
     },
     {
       "name": "marry",
-      "version": "1.0.0",
-      "description": "Automated branch creation, commit, and push workflow"
+      "version": "1.1.0",
+      "description": "Create branch, commit, push, and open PR in one flow"
     },
     {
       "name": "torch",

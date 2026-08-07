@@ -1,140 +1,327 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.0.0"
-    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+    VERSION="1.1.0"
+    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
-        cat <<-MSG
-Usage: git marry -b <branch-name> [-p <pattern>] [-f]
-
-    -b, --branch <name>     New branch name
-    -p, --pattern <path>    File patterns to add (defaults to "src")
-    -f, --force             Push without confirmation
-    -h, --help              Show help
-    -v, --version           Show version
-MSG
-    }
-
-    # abort() — real error during the automated flow, needs full cleanup
-    abort() {
-        echo -e "${RED}Error detected. Cleaning up...${NC}"
-
-        local current_br
-        current_br=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-
-        git reset --mixed >/dev/null 2>&1
-        git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
-
-        if [ -n "$current_br" ] && [ "$current_br" != "$ORIGINAL_BRANCH" ]; then
-            git branch -D "$current_br" >/dev/null 2>&1
-        fi
-
-        # Only pop stash if we actually pushed one in this run
-        if [ "$STASH_PUSHED" = true ]; then
-            git stash pop >/dev/null 2>&1
-        fi
-
-        return 1
-    }
-
-    # decline() — user chose not to push; preserve all work, just skip push
-    decline() {
-        echo -e "\n${YELLOW}Push skipped.${NC}"
-        echo -e "Branch ${GREEN}$BRANCH_NAME${NC} and commit are preserved locally."
+        echo -e "${CYAN}git marry v$VERSION${NC}"
         echo ""
-        read -p "Revert changes and delete branch? (y/n): " revert_confirm
-        if [[ "$revert_confirm" =~ ^[Yy](es)?$ ]]; then
-            echo -e "${YELLOW}Reverting...${NC}"
-            git reset --mixed >/dev/null 2>&1
-            git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
-            git branch -D "$BRANCH_NAME" >/dev/null 2>&1
-            if [ "$STASH_PUSHED" = true ]; then
-                git stash pop >/dev/null 2>&1
-            fi
-            echo -e "${GREEN}Reverted. Back on ${ORIGINAL_BRANCH}.${NC}"
-        else
-            echo -e "${CYAN}Staying on branch ${GREEN}$BRANCH_NAME${CYAN}. No push was made.${NC}"
-        fi
-    }
-
-    marry() {
-        STASH_PUSHED=false
-
-        # Only stash if there is something to stash (dirty working tree)
-        if ! git diff --quiet || ! git diff --cached --quiet; then
-            git stash push -u -m "marry_temp_stash" || return 1
-            STASH_PUSHED=true
-        fi
-
-        git fresh || { abort; return 1; }
-        git checkout -b "$BRANCH_NAME" || { abort; return 1; }
-
-        if [ "$STASH_PUSHED" = true ]; then
-            if ! git stash pop; then
-                abort
-                return 1
-            fi
-            STASH_PUSHED=false  # stash consumed, no longer needs pop on cleanup
-        fi
-
-        for pattern in $ADD_PATTERNS; do
-            git add "$pattern"
-        done
-
-        if ! git cbn; then
-            abort
-            return 1
-        fi
-
-        local commit_msg
-        local files
-        commit_msg=$(git log -1 --pretty=%B)
-        files=$(git diff --name-only HEAD~1)
-
-        if [ "$FORCE_PUSH" = true ]; then
-            git push -u origin "$BRANCH_NAME"
-            if git config --get alias.quiver > /dev/null 2>&1; then
-                git quiver -a "$BRANCH_NAME"
-            fi
-        else
-            echo -e "\n${YELLOW}--- Review ---${NC}"
-            echo -e "Branch: ${GREEN}$BRANCH_NAME${NC}"
-            echo -e "Commit: ${GREEN}$commit_msg${NC}"
-            echo -e "Files:\n${CYAN}$files${NC}"
-
-            read -p "Push to origin? (y/n): " confirm
-            if [[ "$confirm" =~ ^[Yy](es)?$ ]]; then
-                git push -u origin "$BRANCH_NAME"
-                if git config --get alias.quiver > /dev/null 2>&1; then
-                    git quiver -a "$BRANCH_NAME"
-                fi
-            else
-                decline
-            fi
-        fi
+        echo "Create branch, commit, push, and open PR in one flow."
+        echo ""
+        echo -e "${YELLOW}Usage:${NC}"
+        echo "  git marry -b <branch-name>"
+        echo "  git marry -b <branch-name> -a -m \"custom message\""
+        echo ""
+        echo -e "${YELLOW}Options:${NC}"
+        echo "  -b, --branch <name>     New branch name (required)"
+        echo "  -a, --auto-add          Stage all changes (git add -u) instead of pattern"
+        echo "  -p, --pattern <path>    File patterns to add (default: src)"
+        echo "  -m, --message <msg>     Custom commit message (overrides cbn)"
+        echo "  -f, --force             Skip confirmations"
+        echo "  --no-pr                 Skip PR creation"
+        echo "  -h, --help              Show help"
+        echo "  -v, --version           Show version"
+        echo ""
+        echo -e "${YELLOW}PR Template:${NC}"
+        echo "  Configure via git config:"
+        echo "    git config --local marry.template \"<template>\""
+        echo "    git config --global marry.template \"<template>\""
+        echo ""
+        echo "  Template variables:"
+        echo "    {title}     Commit message / PR title"
+        echo "    {ticket}    Ticket URL (from ctx provider)"
+        echo "    {branch}    Branch name"
+        echo "    {prefix}    Ticket prefix (e.g., MAG-1234)"
+        echo ""
+        echo "  Default template:"
+        echo "    ## Correções (issue)"
+        echo "    {ticket}"
+        echo ""
+        echo -e "${YELLOW}Flow:${NC}"
+        echo "  1. Stash → Fresh (if needed) → Create branch"
+        echo "  2. Pop stash → Stage → Commit"
+        echo "  3. Push → Create draft PR with template"
+        echo "  4. Add branch to quiver"
     }
 
     if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
         echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
     fi
 
-    BRANCH_NAME=""; ADD_PATTERNS=""; FORCE_PUSH=false
+    # --- Helpers ---
+
+    get_ticket_prefix() {
+        local branch=$1
+        echo "$branch" | grep -oE "[A-Za-z]+-[0-9]+" | head -n 1
+    }
+
+    get_ticket_url() {
+        local branch=$1
+        local prefix=$(get_ticket_prefix "$branch")
+        if [ -z "$prefix" ]; then echo ""; return; fi
+
+        local provider=$(git config --global --get ctx.provider 2>/dev/null)
+        local domain=$(git config --global --get ctx.domain 2>/dev/null)
+        local custom_prefix=$(git config --global --get ctx.prefix 2>/dev/null)
+
+        if [ -n "$custom_prefix" ]; then
+            echo "${custom_prefix}${prefix}"
+        elif [ "$provider" = "jira" ] && [ -n "$domain" ]; then
+            echo "https://${domain}/browse/${prefix}"
+        elif [ "$provider" = "linear" ] && [ -n "$domain" ]; then
+            echo "https://linear.app/${domain}/issue/${prefix}"
+        else
+            echo ""
+        fi
+    }
+
+    get_pr_template() {
+        # Check local, then global
+        local tmpl=$(git config --local --get marry.template 2>/dev/null)
+        if [ -z "$tmpl" ]; then
+            tmpl=$(git config --global --get marry.template 2>/dev/null)
+        fi
+        # Default template
+        if [ -z "$tmpl" ]; then
+            tmpl='## Correções (issue)\n{ticket}'
+        fi
+        echo "$tmpl"
+    }
+
+    render_template() {
+        local tmpl=$1
+        local title=$2
+        local ticket=$3
+        local branch=$4
+        local prefix=$5
+
+        echo -e "$tmpl" | sed "s|{title}|$title|g;s|{ticket}|$ticket|g;s|{branch}|$branch|g;s|{prefix}|$prefix|g"
+    }
+
+    is_fresh() {
+        # Check if current branch is up to date with origin default
+        local default_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+        default_branch=${default_branch:-main}
+        local current=$(git rev-parse --abbrev-ref HEAD)
+
+        if [ "$current" != "$default_branch" ]; then
+            return 1
+        fi
+
+        # Check if local is behind origin
+        git fetch origin "$default_branch" --dry-run 2>&1 | grep -q "up to date" && return 0
+
+        local local_hash=$(git rev-parse HEAD)
+        local remote_hash=$(git rev-parse "origin/$default_branch" 2>/dev/null)
+        [ "$local_hash" = "$remote_hash" ]
+    }
+
+    # --- Abort/Decline ---
+
+    abort() {
+        echo -e "${RED}Error. Cleaning up...${NC}"
+        local current_br=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        git reset --mixed >/dev/null 2>&1
+        git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
+        if [ -n "$current_br" ] && [ "$current_br" != "$ORIGINAL_BRANCH" ]; then
+            git branch -D "$current_br" >/dev/null 2>&1
+        fi
+        if [ "$STASH_PUSHED" = true ]; then
+            git stash pop >/dev/null 2>&1
+        fi
+        return 1
+    }
+
+    decline() {
+        echo -e "\n${YELLOW}Push skipped.${NC}"
+        echo -e "Branch ${GREEN}$BRANCH_NAME${NC} preserved locally."
+        echo ""
+        read -p "Revert and delete branch? [y/N] " revert < /dev/tty
+        if [[ "$revert" =~ ^[Yy] ]]; then
+            git reset --mixed >/dev/null 2>&1
+            git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
+            git branch -D "$BRANCH_NAME" >/dev/null 2>&1
+            if [ "$STASH_PUSHED" = true ]; then git stash pop >/dev/null 2>&1; fi
+            echo -e "${GREEN}Reverted.${NC}"
+        else
+            echo -e "${CYAN}Staying on $BRANCH_NAME.${NC}"
+        fi
+    }
+
+    # --- Main flow ---
+
+    marry() {
+        STASH_PUSHED=false
+
+        # Stash if dirty
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+            git stash push -u -m "marry_temp_stash" || return 1
+            STASH_PUSHED=true
+        fi
+
+        # Smart fresh: skip if already on updated default branch
+        if is_fresh; then
+            echo -e "${GRAY}Already on latest. Skipping fresh.${NC}"
+        else
+            git fresh || { abort; return 1; }
+        fi
+
+        # Create branch
+        git checkout -b "$BRANCH_NAME" || { abort; return 1; }
+
+        # Pop stash
+        if [ "$STASH_PUSHED" = true ]; then
+            if ! git stash pop; then abort; return 1; fi
+            STASH_PUSHED=false
+        fi
+
+        # Stage files
+        if [ "$AUTO_ADD" = true ]; then
+            git add -u
+            # Also add untracked if any
+            local untracked=$(git ls-files --others --exclude-standard)
+            if [ -n "$untracked" ]; then
+                echo "$untracked" | xargs git add
+            fi
+        else
+            for pattern in $ADD_PATTERNS; do
+                git add "$pattern"
+            done
+        fi
+
+        # Check if anything staged
+        if git diff --cached --quiet; then
+            echo -e "${YELLOW}Nothing staged. Aborting.${NC}"
+            abort; return 1
+        fi
+
+        # Commit
+        if [ -n "$CUSTOM_MESSAGE" ]; then
+            git commit -m "$CUSTOM_MESSAGE" > /dev/null 2>&1
+        else
+            if ! git cbn; then abort; return 1; fi
+        fi
+
+        local commit_msg=$(git log -1 --pretty=%B | head -n1)
+        local files=$(git diff --name-only HEAD~1)
+        local file_count=$(echo "$files" | wc -l | xargs)
+
+        # Review
+        if [ "$FORCE_PUSH" != true ]; then
+            echo ""
+            echo -e "${GRAY}──────────────────────────────────────${NC}"
+            echo -e "  Branch:  ${GREEN}$BRANCH_NAME${NC}"
+            echo -e "  Commit:  ${GREEN}$commit_msg${NC}"
+            echo -e "  Files:   ${CYAN}$file_count${NC}"
+            echo -e "${GRAY}──────────────────────────────────────${NC}"
+            echo ""
+            read -p "Push and create PR? [Y/n] " confirm < /dev/tty
+            if [[ "$confirm" =~ ^[nN] ]]; then
+                decline; return
+            fi
+        fi
+
+        # Push
+        git push -u origin "$BRANCH_NAME" || { abort; return 1; }
+
+        # Add to quiver
+        if git config --global --get alias.quiver > /dev/null 2>&1; then
+            git quiver -a "$BRANCH_NAME" 2>/dev/null
+        fi
+
+        # Create PR
+        if [ "$NO_PR" != true ] && command -v gh > /dev/null 2>&1; then
+            create_pr "$commit_msg"
+        elif [ "$NO_PR" != true ]; then
+            echo -e "${GRAY}(gh CLI not installed — skipping PR creation)${NC}"
+        fi
+
+        echo ""
+        echo -e "${GREEN}✓ Done.${NC}"
+    }
+
+    create_pr() {
+        local commit_msg=$1
+        local prefix=$(get_ticket_prefix "$BRANCH_NAME")
+        local ticket_url=$(get_ticket_url "$BRANCH_NAME")
+        local template=$(get_pr_template)
+
+        # Generate title (same as commit message)
+        local pr_title="$commit_msg"
+
+        # Generate body from template
+        local pr_body=$(render_template "$template" "$pr_title" "$ticket_url" "$BRANCH_NAME" "$prefix")
+
+        echo ""
+        echo -e "${CYAN}Creating draft PR...${NC}"
+        echo -e "  ${GRAY}Title: $pr_title${NC}"
+        if [ -n "$ticket_url" ]; then
+            echo -e "  ${GRAY}Ticket: $ticket_url${NC}"
+        fi
+        echo ""
+
+        # Ask to confirm/edit
+        if [ "$FORCE_PUSH" != true ]; then
+            echo -e "${GRAY}PR body preview:${NC}"
+            echo -e "${GRAY}─────────────────────────────${NC}"
+            echo "$pr_body"
+            echo -e "${GRAY}─────────────────────────────${NC}"
+            echo ""
+            read -p "Create PR? [Y/edit title/n] " pr_confirm < /dev/tty
+            case "$pr_confirm" in
+                [nN]|[nN][oO])
+                    echo -e "${YELLOW}PR skipped. Push completed.${NC}"
+                    return
+                    ;;
+                [eE]|[eE][dD][iI][tT]*)
+                    read -p "Title: " new_title < /dev/tty
+                    [ -n "$new_title" ] && pr_title="$new_title"
+                    ;;
+            esac
+        fi
+
+        # Detect base branch
+        local base_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+        base_branch=${base_branch:-main}
+
+        if gh pr create --draft --title "$pr_title" --body "$pr_body" --base "$base_branch" > /dev/null 2>&1; then
+            local pr_url=$(gh pr view --json url --jq '.url' 2>/dev/null)
+            echo -e "${GREEN}✓ Draft PR created: ${pr_url}${NC}"
+        else
+            echo -e "${RED}✗ PR creation failed. Push was successful though.${NC}"
+            echo -e "${GRAY}Create manually: gh pr create --draft${NC}"
+        fi
+    }
+
+    # --- Parse args ---
+
+    BRANCH_NAME=""
+    ADD_PATTERNS=""
+    AUTO_ADD=false
+    FORCE_PUSH=false
+    CUSTOM_MESSAGE=""
+    NO_PR=false
     ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
     while [ "$#" -gt 0 ]; do
         case $1 in
-            -h|--help) show_help; exit 0;;
-            -v|--version) echo "git marry v$VERSION"; exit 0;;
-            -b|--branch) BRANCH_NAME="$2"; shift 2;;
-            -p|--pattern) ADD_PATTERNS="$ADD_PATTERNS $2"; shift 2;;
-            -f|--force) FORCE_PUSH=true; shift;;
-            *) echo -e "${RED}Error: Unknown argument: $1${NC}"; show_help; exit 1;;
+            -h|--help)     show_help; exit 0;;
+            -v|--version)  echo "git marry v$VERSION"; exit 0;;
+            -b|--branch)   BRANCH_NAME="$2"; shift 2;;
+            -p|--pattern)  ADD_PATTERNS="$ADD_PATTERNS $2"; shift 2;;
+            -a|--auto-add) AUTO_ADD=true; shift;;
+            -m|--message)  CUSTOM_MESSAGE="$2"; shift 2;;
+            -f|--force)    FORCE_PUSH=true; shift;;
+            --no-pr)       NO_PR=true; shift;;
+            *)
+                echo -e "${RED}Unknown: $1${NC}"
+                show_help; exit 1;;
         esac
     done
 
-    [ -z "$BRANCH_NAME" ] && { echo -e "${RED}Error: Branch name required. Use -b <name>${NC}"; exit 1; }
-    [ -z "$ADD_PATTERNS" ] && ADD_PATTERNS="src"
+    [ -z "$BRANCH_NAME" ] && { echo -e "${RED}Branch name required. Use -b <name>${NC}"; exit 1; }
+    [ -z "$ADD_PATTERNS" ] && [ "$AUTO_ADD" = false ] && ADD_PATTERNS="src"
 
     marry
 EOF
