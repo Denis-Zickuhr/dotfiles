@@ -29,8 +29,8 @@
     },
     {
       "name": "cbn",
-      "version": "1.0.0",
-      "description": "Commit with message auto-generated from branch name"
+      "version": "1.1.0",
+      "description": "Commit with message auto-generated from branch name (supports scoped monorepos)"
     },
     {
       "name": "quiver",
