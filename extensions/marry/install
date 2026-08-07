@@ -256,7 +256,8 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         else
             # If pattern is a single known directory, pass it as scope to cbn
             local scope_flag=""
-            if [ "$AUTO_ADD" = false ] && [ "$(echo $ADD_PATTERNS | wc -w)" -eq 1 ]; then
+            local pattern_count=$(echo $ADD_PATTERNS | wc -w)
+            if [ "$AUTO_ADD" = false ] && [ "$pattern_count" -eq 1 ]; then
                 local single_pattern=$(echo "$ADD_PATTERNS" | xargs)
                 if [ -d "$single_pattern" ] && [ "$single_pattern" != "." ]; then
                     scope_flag="-s $single_pattern"
