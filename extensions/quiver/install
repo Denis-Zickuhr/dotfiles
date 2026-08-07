@@ -72,11 +72,13 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "  git quiver f              Switch to default (main) branch"
         echo ""
         echo -e "${YELLOW}Commands (usable in interactive mode):${NC}"
-        echo "  ctx [n]                   Show branch context (ticket + PR)"
-        echo "  pr [n]                    Show/create pull request"
+        echo "  ctx [n|.]                 Show branch context (ticket + PR)"
+        echo "  pr [n|.]                  Show/create pull request"
+        echo "  hotfix [n] <targets>      Cherry-pick from branch into targets"
+        echo "  a                         Add current branch to quiver"
         echo ""
-        echo -e "${GRAY}  [n] = optional branch index. Without it, runs on current branch.${NC}"
-        echo -e "${GRAY}  Example: 'ctx 3' shows context of branch #3 without switching.${NC}"
+        echo -e "${GRAY}  [n] = branch index | [.] = all branches${NC}"
+        echo -e "${GRAY}  Example: 'ctx 3' or 'hotfix 2 master release-0708'${NC}"
     }
 
     is_quiver_command() {
@@ -286,8 +288,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
         # Footer
         echo -e "${GRAY}  ──────────────────────────────────────────${NC}"
-        echo -e "  ${GRAY}${#branches[@]} branches │ commands: ctx, pr${NC}"
-        echo -e "  ${GRAY}[n] switch │ [cmd n] inspect branch │ [h] help${NC}"
+        echo -e "  ${GRAY}${#branches[@]} branches │ ctx, pr, hotfix │ [a] add │ [h] help${NC}"
         echo ""
 
         # Input
@@ -337,16 +338,17 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         elif [[ "$first_word" =~ ^[hH\?]$ ]]; then
             echo ""
             echo -e "  ${YELLOW}Actions:${NC}"
-            echo -e "    ${CYAN}[n]${NC}          Switch to branch n"
-            echo -e "    ${CYAN}f${NC}            Switch to main"
-            echo -e "    ${CYAN}a${NC}            Add current branch to quiver"
-            echo -e "    ${CYAN}q${NC}            Quit"
+            echo -e "    ${CYAN}[n]${NC}            Switch to branch n"
+            echo -e "    ${CYAN}f${NC}              Switch to main"
+            echo -e "    ${CYAN}a${NC}              Add current branch to quiver"
+            echo -e "    ${CYAN}q${NC}              Quit"
             echo ""
-            echo -e "  ${YELLOW}Commands (inspect any branch):${NC}"
-            echo -e "    ${CYAN}ctx${NC}          Context of current branch"
-            echo -e "    ${CYAN}ctx 3${NC}        Context of branch #3"
-            echo -e "    ${CYAN}pr${NC}           PR of current branch"
-            echo -e "    ${CYAN}pr 2${NC}         PR of branch #2"
+            echo -e "  ${YELLOW}Commands:${NC}"
+            echo -e "    ${CYAN}ctx${NC}            Context of current branch"
+            echo -e "    ${CYAN}ctx 3${NC}          Context of branch #3"
+            echo -e "    ${CYAN}ctx .${NC}          Context of all branches"
+            echo -e "    ${CYAN}pr .${NC}           PR status of all branches"
+            echo -e "    ${CYAN}hotfix 3 master${NC} Hotfix branch #3 into master"
             echo ""
 
         else

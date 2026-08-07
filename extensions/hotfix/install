@@ -154,10 +154,16 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
         local fork_point=""
 
-        # Try to find where source branch forked from (its upstream tracking branch or origin/HEAD)
+        # Try to find where source branch forked from (its upstream tracking branch)
         local source_upstream=$(git config --get "branch.$SOURCE_BRANCH.merge" 2>/dev/null | sed 's|refs/heads/||')
-        if [ -n "$source_upstream" ]; then
+        # Skip if upstream points to itself
+        if [ -n "$source_upstream" ] && [ "$source_upstream" != "$SOURCE_BRANCH" ]; then
             fork_point=$(git merge-base "origin/$source_upstream" "$SOURCE_BRANCH" 2>/dev/null)
+            # Verify we actually get commits — if 0, the fork point is wrong
+            local test_count=$(git rev-list --count "$fork_point..$SOURCE_BRANCH" 2>/dev/null)
+            if [ "$test_count" -eq 0 ]; then
+                fork_point=""
+            fi
         fi
 
         # Fallback: try origin/HEAD (default branch)
