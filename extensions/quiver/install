@@ -91,11 +91,16 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local cmd=$1
         shift
         local target_branch=""
+        local run_all=false
         local cmd_args=""
 
+        # Parse: "ctx *" means run ctx on ALL branches
         # Parse: "ctx 3" means run ctx on branch at index 3
         # Parse: "ctx" means run ctx on current branch
-        if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+        if [[ "${1:-}" == "*" ]]; then
+            run_all=true
+            shift
+        elif [[ "${1:-}" =~ ^[0-9]+$ ]]; then
             local idx=$(($1 - 1))
             local branches=($(get_quiver))
             local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
@@ -125,17 +130,43 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             return 1
         fi
 
-        echo ""
         local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
+        # Run on ALL branches
+        if [ "$run_all" = true ]; then
+            local branches=($(get_quiver))
+            local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+            main_branch=${main_branch:-main}
+
+            local display_num=1
+            for i in "${!branches[@]}"; do
+                local b="${branches[$i]}"
+                [ "$b" == "$main_branch" ] && continue
+
+                echo ""
+                echo -e "  ${GRAY}[$display_num]${NC} ${CYAN}git $cmd${NC} ${GRAY}on ${b}${NC}"
+                echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
+                if [ "$b" = "$current" ]; then
+                    git "$cmd" $cmd_args
+                else
+                    git checkout "$b" > /dev/null 2>&1
+                    git "$cmd" $cmd_args
+                    git checkout "$current" > /dev/null 2>&1
+                fi
+                echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
+                display_num=$((display_num + 1))
+            done
+            return
+        fi
+
+        echo ""
+
         if [ -z "$target_branch" ] || [ "$target_branch" = "$current" ]; then
-            # Run on current branch
             echo -e "  ${CYAN}git $cmd $cmd_args${NC} ${GRAY}on ${current}${NC}"
             echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
             git "$cmd" $cmd_args
             echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
         else
-            # Switch, run, switch back (silently)
             echo -e "  ${CYAN}git $cmd $cmd_args${NC} ${GRAY}on ${target_branch}${NC}"
             echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
             git checkout "$target_branch" > /dev/null 2>&1
