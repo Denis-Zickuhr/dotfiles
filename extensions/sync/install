@@ -1,40 +1,61 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-#!/bin/bash
-
-VERSION="1.0.0"
-GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+VERSION="1.1.0"
+GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
 show_help() {
-    echo -e "${CYAN}git sync${NC} — Fetch and rebase/merge the default branch onto the current branch"
+    echo -e "${CYAN}git sync v$VERSION${NC}"
     echo ""
-    echo "Usage: git sync [options]"
+    echo "Sync current branch with upstream via rebase or merge."
     echo ""
-    echo "Options:"
-    echo "  -h, --help       Show this help message"
-    echo "  -v, --version    Show version"
-    echo "  -b <branch>      Sync with a specific branch instead of the default"
-    echo "      --merge      Use merge instead of rebase"
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  git sync                   Rebase onto default branch"
+    echo "  git sync --push            Rebase + force push to origin"
+    echo "  git sync -b develop        Sync with specific branch"
+    echo "  git sync --merge           Use merge instead of rebase"
+    echo ""
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  -b, --base <branch>   Branch to sync with (default: auto-detect)"
+    echo "  --push                Push to origin after sync (force-with-lease)"
+    echo "  --merge               Use merge instead of rebase"
+    echo "  --abort-on-fail       Auto-abort on conflict (used by quiver)"
+    echo "  -h, --help            Show this help"
+    echo "  -v, --version         Show version"
+    echo ""
+    echo -e "${YELLOW}Base detection (when -b not provided):${NC}"
+    echo "  1. origin/HEAD (remote default branch)"
+    echo "  2. origin/main"
+    echo "  3. origin/master"
+    echo "  4. origin/develop"
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  git sync                   # rebase onto origin/develop"
+    echo "  git sync --push            # rebase + push to remote"
+    echo "  git sync -b master         # rebase onto master specifically"
+    echo "  git sync --merge --push    # merge + push"
+    exit 0
 }
 
 USE_MERGE=false
 TARGET_BRANCH=""
 ABORT_ON_FAIL=false
+PUSH_AFTER=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -h|--help) show_help; exit 0;;
+        -h|--help) show_help;;
         -v|--version) echo "git sync v$VERSION"; exit 0;;
         --merge) USE_MERGE=true; shift;;
+        --push) PUSH_AFTER=true; shift;;
         --abort-on-fail) ABORT_ON_FAIL=true; shift;;
-        -b)
+        -b|--base)
             if [[ -z "$2" || "$2" == -* ]]; then
                 echo -e "${RED}Error: -b requires a branch name.${NC}"; exit 1
             fi
             TARGET_BRANCH="$2"; shift 2;;
         *)
-            echo -e "${RED}Error: Unknown option '$1'. Use --help for usage.${NC}"; exit 1;;
+            echo -e "${RED}Unknown: '$1'. Use --help.${NC}"; exit 1;;
     esac
 done
 
@@ -61,74 +82,72 @@ if [[ -z "$TARGET_BRANCH" ]]; then
 fi
 
 echo -e "${CYAN}Fetching from origin...${NC}"
-if ! git fetch origin; then
-    echo -e "${RED}Error: Failed to fetch from origin.${NC}"; exit 1
+if ! git fetch origin > /dev/null 2>&1; then
+    echo -e "${RED}Error: Failed to fetch.${NC}"; exit 1
 fi
 
 STASHED=false
 if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo -e "${YELLOW}Stashing uncommitted changes...${NC}"
-    git stash push -m "git-sync: auto-stash before sync" > /dev/null 2>&1
+    echo -e "${YELLOW}Stashing changes...${NC}"
+    git stash push -m "git-sync: auto-stash" > /dev/null 2>&1
     STASHED=true
 fi
 
+SYNC_OK=false
+
 if [[ "$USE_MERGE" == true ]]; then
     echo -e "${CYAN}Merging origin/${TARGET_BRANCH} into ${CURRENT_BRANCH}...${NC}"
-    if git merge "origin/${TARGET_BRANCH}"; then
-        echo -e "${GREEN}✔ Successfully merged origin/${TARGET_BRANCH} into ${CURRENT_BRANCH}.${NC}"
+    if git merge "origin/${TARGET_BRANCH}" > /dev/null 2>&1; then
+        echo -e "${GREEN}✔ Merged origin/${TARGET_BRANCH} into ${CURRENT_BRANCH}.${NC}"
+        SYNC_OK=true
     else
         if [[ "$ABORT_ON_FAIL" == true ]]; then
             git merge --abort > /dev/null 2>&1
             echo -e "${RED}✗ Conflict — merge aborted.${NC}"
-            if [[ "$STASHED" == true ]]; then git stash pop > /dev/null 2>&1; fi
+            [[ "$STASHED" == true ]] && git stash pop > /dev/null 2>&1
             exit 1
         fi
-        echo -e "${RED}✖ Merge conflict detected.${NC}"
-        echo -e "${YELLOW}Resolve conflicts and then run:${NC}"
-        echo -e "  git add <resolved-files>"
-        echo -e "  git commit"
-        echo -e ""
-        echo -e "${YELLOW}Or abort the merge with:${NC}"
-        echo -e "  git merge --abort"
-        if [[ "$STASHED" == true ]]; then
-            echo -e ""
-            echo -e "${YELLOW}Note: You have stashed changes. Run 'git stash pop' after resolving.${NC}"
-        fi
+        echo -e "${RED}✗ Merge conflict.${NC}"
+        echo -e "${GRAY}  Resolve and commit, or: git merge --abort${NC}"
+        [[ "$STASHED" == true ]] && echo -e "${GRAY}  Stash saved. Run 'git stash pop' after resolving.${NC}"
         exit 1
     fi
 else
     echo -e "${CYAN}Rebasing ${CURRENT_BRANCH} onto origin/${TARGET_BRANCH}...${NC}"
-    if git rebase "origin/${TARGET_BRANCH}"; then
-        echo -e "${GREEN}✔ Successfully rebased ${CURRENT_BRANCH} onto origin/${TARGET_BRANCH}.${NC}"
+    if git rebase "origin/${TARGET_BRANCH}" > /dev/null 2>&1; then
+        echo -e "${GREEN}✔ Rebased ${CURRENT_BRANCH} onto origin/${TARGET_BRANCH}.${NC}"
+        SYNC_OK=true
     else
         if [[ "$ABORT_ON_FAIL" == true ]]; then
             git rebase --abort > /dev/null 2>&1
             echo -e "${RED}✗ Conflict — rebase aborted.${NC}"
-            if [[ "$STASHED" == true ]]; then git stash pop > /dev/null 2>&1; fi
+            [[ "$STASHED" == true ]] && git stash pop > /dev/null 2>&1
             exit 1
         fi
-        echo -e "${RED}✖ Rebase conflict detected.${NC}"
-        echo -e "${YELLOW}To resolve:${NC}"
-        echo -e "  1. Fix the conflicts in the listed files"
-        echo -e "  2. git add <resolved-files>"
-        echo -e "  3. git rebase --continue"
-        echo -e ""
-        echo -e "${YELLOW}Or abort the rebase with:${NC}"
-        echo -e "  git rebase --abort"
-        if [[ "$STASHED" == true ]]; then
-            echo -e ""
-            echo -e "${YELLOW}Note: You have stashed changes. Run 'git stash pop' after resolving.${NC}"
-        fi
+        echo -e "${RED}✗ Rebase conflict.${NC}"
+        echo -e "${GRAY}  Resolve, git add, git rebase --continue${NC}"
+        echo -e "${GRAY}  Or: git rebase --abort${NC}"
+        [[ "$STASHED" == true ]] && echo -e "${GRAY}  Stash saved. Run 'git stash pop' after resolving.${NC}"
         exit 1
     fi
 fi
 
 if [[ "$STASHED" == true ]]; then
-    echo -e "${CYAN}Restoring stashed changes...${NC}"
     if git stash pop > /dev/null 2>&1; then
-        echo -e "${GREEN}✔ Stashed changes restored.${NC}"
+        echo -e "${GREEN}✔ Stash restored.${NC}"
     else
-        echo -e "${YELLOW}⚠ Could not cleanly restore stashed changes. Use 'git stash show' and 'git stash pop' manually.${NC}"
+        echo -e "${YELLOW}⚠ Stash conflict. Use 'git stash pop' manually.${NC}"
+    fi
+fi
+
+# Push after successful sync
+if [[ "$SYNC_OK" == true ]] && [[ "$PUSH_AFTER" == true ]]; then
+    echo -e "${CYAN}Pushing to origin/${CURRENT_BRANCH}...${NC}"
+    if git push --force-with-lease -u origin "$CURRENT_BRANCH" > /dev/null 2>&1; then
+        echo -e "${GREEN}✔ Pushed to origin/${CURRENT_BRANCH}.${NC}"
+    else
+        echo -e "${RED}✗ Push failed.${NC}"
+        exit 1
     fi
 fi
 EOF
