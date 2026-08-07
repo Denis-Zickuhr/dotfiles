@@ -11,7 +11,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     # --- Quiver commands registry ---
     # remote: can run targeting any branch without checkout
-    QUIVER_CMDS_REMOTE="ctx pr"
+    QUIVER_CMDS_REMOTE="ctx pr hotfix"
     QUIVER_COMMANDS="$QUIVER_CMDS_REMOTE"
 
     get_quiver() {
@@ -171,6 +171,12 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             echo -e "  ${CYAN}git $cmd $cmd_args${NC} ${GRAY}on ${current}${NC}"
             echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
             git "$cmd" $cmd_args
+            echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
+        elif [ "$cmd" = "hotfix" ]; then
+            # Hotfix: pass -f <branch> instead of checkout
+            echo -e "  ${CYAN}git hotfix -f $target_branch $cmd_args${NC}"
+            echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
+            git hotfix -f "$target_branch" $cmd_args
             echo -e "  ${GRAY}─────────────────────────────────────────${NC}"
         else
             echo -e "  ${CYAN}git $cmd $cmd_args${NC} ${GRAY}on ${target_branch}${NC}"
