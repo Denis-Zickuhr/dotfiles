@@ -254,14 +254,9 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         if [ -n "$CUSTOM_MESSAGE" ]; then
             git commit -m "$CUSTOM_MESSAGE" > /dev/null 2>&1
         else
-            # If pattern is a single known directory, pass it as scope to cbn
             local scope_flag=""
-            local pattern_count=$(echo $ADD_PATTERNS | wc -w)
-            if [ "$AUTO_ADD" = false ] && [ "$pattern_count" -eq 1 ]; then
-                local single_pattern=$(echo "$ADD_PATTERNS" | xargs)
-                if [ -d "$single_pattern" ] && [ "$single_pattern" != "." ]; then
-                    scope_flag="-s $single_pattern"
-                fi
+            if [ -n "$SCOPE" ]; then
+                scope_flag="-s $SCOPE"
             fi
             if ! git cbn $scope_flag; then abort; return 1; fi
         fi
@@ -445,6 +440,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     AUTO_ADD=false
     FORCE_PUSH=false
     CUSTOM_MESSAGE=""
+    SCOPE=""
     NO_PR=false
     ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
@@ -455,6 +451,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             --setup)       setup_template; exit 0;;
             -b|--branch)   BRANCH_NAME="$2"; shift 2;;
             -p|--pattern)  ADD_PATTERNS="$ADD_PATTERNS $2"; shift 2;;
+            -s|--scope)    SCOPE="$2"; shift 2;;
             -a|--auto-add) AUTO_ADD=true; shift;;
             -m|--message)  CUSTOM_MESSAGE="$2"; shift 2;;
             -f|--force)    FORCE_PUSH=true; shift;;
