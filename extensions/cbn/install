@@ -45,19 +45,20 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     detect_scope_from_files() {
         # Check staged files — if all share the same top-level directory, that's the scope
+        # If multiple dirs and repo has a "global/" dir (monorepo pattern), scope = "global"
         local staged=$(git diff --cached --name-only 2>/dev/null)
         [ -z "$staged" ] && return
 
         local dirs=$(echo "$staged" | grep "/" | cut -d/ -f1 | sort -u)
         local dir_count=$(echo "$dirs" | grep -c . 2>/dev/null)
 
-        # Only if ALL files are in the same top-level dir
         if [ "$dir_count" -eq 1 ]; then
             local scope_dir=$(echo "$dirs" | head -1)
-            # Verify it's actually a directory (not a file at root)
             if [ -d "$scope_dir" ]; then
                 echo "$scope_dir"
             fi
+        elif [ "$dir_count" -gt 1 ] && [ -d "global" ]; then
+            echo "global"
         fi
     }
 
