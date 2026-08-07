@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.0.0"
+    VERSION="1.1.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -12,18 +12,21 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo -e "${YELLOW}Usage:${NC}"
         echo "  git pinch              Open changed files in editor"
         echo "  git pinch --pop        Pop commits (soft-reset) + open files for editing"
-        echo "  git pinch --ship       Ship: stage all, amend/commit, and push"
+        echo "  git pinch --ship       Ship: stage all, commit, and push"
         echo ""
         echo -e "${YELLOW}Workflow:${NC}"
-        echo "  1. git pinch --pop     → Pops commits, opens files to edit"
+        echo "  1. git pinch --pop     → Pops commits, saves commit message, opens files"
         echo "  2. (edit your files)"
-        echo "  3. git pinch --ship    → Commits changes and pushes to origin"
+        echo "  3. git pinch --ship    → Commits with saved message and pushes"
         echo ""
         echo -e "${YELLOW}Modes:${NC}"
         echo "  (default)              Open changed files in editor (no git ops)"
-        echo "  -p, --pop              Soft-reset to merge base + open files for editing"
-        echo "  -s, --ship             Stage all + commit/amend + push"
+        echo "  -p, --pop              Soft-reset + open files for editing"
+        echo "  -s, --ship             Stage all + commit (restores saved message) + push"
         echo "  -r, --revert [file]    Revert changed files to upstream state"
+        echo ""
+        echo -e "${YELLOW}Pop options:${NC}"
+        echo "  -d, --depth <n>        Number of commits to pop (default: all since upstream)"
         echo ""
         echo -e "${YELLOW}Options:${NC}"
         echo "  -e, --editor <ed>      Override editor"
@@ -40,6 +43,23 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
         echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
     fi
+
+    # --- Memory: save/restore commit message per branch ---
+    save_commit_message() {
+        local msg=$1
+        local branch=$(git rev-parse --abbrev-ref HEAD)
+        git config --local "pinch.msg.$branch" "$msg"
+    }
+
+    get_saved_message() {
+        local branch=$(git rev-parse --abbrev-ref HEAD)
+        git config --local --get "pinch.msg.$branch" 2>/dev/null || echo ""
+    }
+
+    clear_saved_message() {
+        local branch=$(git rev-parse --abbrev-ref HEAD)
+        git config --local --unset "pinch.msg.$branch" 2>/dev/null || true
+    }
 
     resolve_editor() {
         local ed=""
@@ -125,35 +145,51 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "$files" | xargs -r -o $editor
     }
 
-    # --- Mode: Keep (pop commits + open for editing) ---
-    mode_keep() {
-        local files=$1 editor=$2 merge_base=$3 upstream=$4 force=$5
+    # --- Mode: Pop (soft-reset + open for editing) ---
+    mode_pop() {
+        local files=$1 editor=$2 merge_base=$3 upstream=$4 force=$5 depth=$6
 
-        local commit_count=$(git rev-list --count "$merge_base..HEAD" 2>/dev/null)
-        if [ "$commit_count" -eq 0 ]; then
+        local total_commits=$(git rev-list --count "$merge_base..HEAD" 2>/dev/null)
+        if [ "$total_commits" -eq 0 ]; then
             echo -e "${YELLOW}No commits to pop (HEAD is at merge base).${NC}"
             echo -e "${CYAN}Opening files anyway...${NC}"
             echo "$files" | xargs -r -o $editor
             return
         fi
 
-        local short_base=$(git rev-parse --short "$merge_base")
+        # Determine how many commits to pop
+        local pop_count=$total_commits
+        if [ -n "$depth" ] && [ "$depth" -gt 0 ]; then
+            if [ "$depth" -gt "$total_commits" ]; then
+                pop_count=$total_commits
+            else
+                pop_count=$depth
+            fi
+        fi
+
+        # Save the last commit message BEFORE resetting
+        local last_msg=$(git log -1 --pretty=%B)
+        save_commit_message "$last_msg"
+
+        local reset_target="HEAD~${pop_count}"
 
         if [ "$force" != true ]; then
-            echo -e "${YELLOW}This will soft-reset $commit_count commit(s) back to $short_base.${NC}"
-            echo -e "${GRAY}Your changes stay in working tree for editing.${NC}"
+            echo -e "${YELLOW}This will soft-reset $pop_count of $total_commits commit(s).${NC}"
+            echo -e "${GRAY}Saved message: \"$(echo "$last_msg" | head -n1)\"${NC}"
             printf "Continue? [Y/n] "
             read -r answer < /dev/tty
             case "$answer" in
                 [nN][oO]|[nN])
+                    clear_saved_message
                     echo -e "${YELLOW}Aborted.${NC}"
                     exit 0
                     ;;
             esac
         fi
 
-        git reset --soft "$merge_base" > /dev/null 2>&1
-        echo -e "${GREEN}✓ Popped $commit_count commit(s). Changes are staged.${NC}"
+        git reset --soft "$reset_target" > /dev/null 2>&1
+        echo -e "${GREEN}✓ Popped $pop_count commit(s). Changes are staged.${NC}"
+        echo -e "${GRAY}  Saved message: \"$(echo "$last_msg" | head -n1)\"${NC}"
         echo ""
         echo -e "${CYAN}Opening files for editing...${NC}"
         echo "$files" | xargs -r -o $editor
@@ -161,8 +197,8 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo -e "${GRAY}When done, run ${NC}${GREEN}git pinch --ship${NC}${GRAY} to commit and push.${NC}"
     }
 
-    # --- Mode: Apply (commit + push) ---
-    mode_apply() {
+    # --- Mode: Ship (commit + push) ---
+    mode_ship() {
         local upstream=$1 force=$2
 
         local branch=$(git rev-parse --abbrev-ref HEAD)
@@ -186,7 +222,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         # Show what will be committed
         local changed=$(git diff --cached --name-only 2>/dev/null)
         local count=$(echo "$changed" | wc -l | xargs)
-        echo -e "${CYAN}Applying $count file(s):${NC}"
+        echo -e "${CYAN}Shipping $count file(s):${NC}"
         echo "$changed" | while IFS= read -r f; do
             echo -e "  ${GREEN}+${NC} $f"
         done
@@ -196,38 +232,68 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local commit_count=$(git rev-list --count "$merge_base..HEAD" 2>/dev/null)
 
         if [ "$commit_count" -eq 0 ]; then
-            # No commits since merge base — need a commit message
+            # No commits since merge base — use saved message or ask
             echo ""
-            echo -e "${CYAN}No existing commit to amend. Creating new commit.${NC}"
 
-            # Try to generate message from branch name (like cbn)
-            local CT="feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert"
-            local commit_type=$(echo "$branch" | grep -oE "(${CT})" | head -n 1)
+            local saved_msg=$(get_saved_message)
 
-            if [ -n "$commit_type" ]; then
-                local desc=$(echo "$branch" | sed -n "s/.*${commit_type}[-\/]//p" | sed 's/[-_]/ /g')
-                local suggested="${commit_type}: ${desc}"
-                echo -e "${GRAY}Suggested: ${suggested}${NC}"
-                printf "Commit message (enter to accept, or type new): "
-                read -r custom_msg < /dev/tty
-                local msg="${custom_msg:-$suggested}"
+            if [ -n "$saved_msg" ]; then
+                local first_line=$(echo "$saved_msg" | head -n1)
+                echo -e "${GRAY}Saved message: \"$first_line\"${NC}"
+                printf "Use this message? [Y/n/edit] "
+                read -r answer < /dev/tty
+                case "$answer" in
+                    [nN][oO]|[nN])
+                        printf "Commit message: "
+                        read -r saved_msg < /dev/tty
+                        ;;
+                    [eE]|[eE][dD][iI][tT])
+                        printf "Edit message [%s]: " "$first_line"
+                        read -r edited < /dev/tty
+                        saved_msg="${edited:-$saved_msg}"
+                        ;;
+                esac
+
+                if [ -z "$saved_msg" ]; then
+                    echo -e "${RED}Error: Commit message required.${NC}"
+                    exit 1
+                fi
+
+                git commit -m "$saved_msg" > /dev/null 2>&1
+                echo -e "${GREEN}✓ Committed: $(echo "$saved_msg" | head -n1)${NC}"
+                clear_saved_message
             else
-                printf "Commit message: "
-                read -r msg < /dev/tty
-            fi
+                # No saved message — try branch name or ask
+                echo -e "${CYAN}No saved message. Creating new commit.${NC}"
+                local CT="feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert"
+                local commit_type=$(echo "$branch" | grep -oE "(${CT})" | head -n 1)
 
-            if [ -z "$msg" ]; then
-                echo -e "${RED}Error: Commit message required.${NC}"
-                exit 1
-            fi
+                if [ -n "$commit_type" ]; then
+                    local desc=$(echo "$branch" | sed -n "s/.*${commit_type}[-\/]//p" | sed 's/[-_]/ /g')
+                    local suggested="${commit_type}: ${desc}"
+                    echo -e "${GRAY}Suggested: ${suggested}${NC}"
+                    printf "Commit message (enter to accept): "
+                    read -r custom_msg < /dev/tty
+                    local msg="${custom_msg:-$suggested}"
+                else
+                    printf "Commit message: "
+                    read -r msg < /dev/tty
+                fi
 
-            git commit -m "$msg" > /dev/null 2>&1
-            echo -e "${GREEN}✓ Committed: $msg${NC}"
+                if [ -z "$msg" ]; then
+                    echo -e "${RED}Error: Commit message required.${NC}"
+                    exit 1
+                fi
+
+                git commit -m "$msg" > /dev/null 2>&1
+                echo -e "${GREEN}✓ Committed: $msg${NC}"
+            fi
         else
             # Has commits — amend into existing
             git commit --amend --no-edit > /dev/null 2>&1
             local last_msg=$(git log -1 --pretty=%B | head -n 1)
             echo -e "${GREEN}✓ Amended into: $last_msg${NC}"
+            clear_saved_message
         fi
 
         # Push
@@ -293,6 +359,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     SELECT=false
     FORCE=false
     REVERT_FILE=""
+    DEPTH=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -300,8 +367,9 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             -v|--version)   echo "git pinch v$VERSION"; exit 0 ;;
             -e|--editor)    EDITOR_OVERRIDE="$2"; shift ;;
             -u|--upstream)  UPSTREAM="$2"; shift ;;
-            -p|--pop)       MODE="keep" ;;
-            -s|--ship)      MODE="apply" ;;
+            -p|--pop)       MODE="pop" ;;
+            -s|--ship)      MODE="ship" ;;
+            -d|--depth)     DEPTH="$2"; shift ;;
             -r|--revert)
                 MODE="revert"
                 if [ -n "$2" ] && [[ "$2" != -* ]]; then
@@ -324,9 +392,9 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         FINAL_EDITOR=$(resolve_editor)
     fi
 
-    # Apply mode doesn't need merge base or file list upfront
-    if [ "$MODE" = "apply" ]; then
-        mode_apply "$UPSTREAM" "$FORCE"
+    # Ship mode doesn't need merge base or file list upfront
+    if [ "$MODE" = "ship" ]; then
+        mode_ship "$UPSTREAM" "$FORCE"
         exit 0
     fi
 
@@ -334,7 +402,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     merge_base=$(get_merge_base "$UPSTREAM")
     files=$(get_changed_files "$merge_base")
 
-    # Also include staged/unstaged files not yet committed (for after -k)
+    # Also include staged/unstaged files not yet committed (for after pop)
     if [ "$MODE" = "open" ] || [ "$MODE" = "revert" ]; then
         staged_files=$(git diff --cached --name-only 2>/dev/null | grep -vE "^(vendor/|node_modules/|public/storage/|composer.lock|package-lock.json)")
         if [ -n "$staged_files" ] && [ -z "$files" ]; then
@@ -368,7 +436,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     # Execute mode
     case "$MODE" in
         open)   mode_open "$files" "$FINAL_EDITOR" ;;
-        keep)   mode_keep "$files" "$FINAL_EDITOR" "$merge_base" "$UPSTREAM" "$FORCE" ;;
+        pop)    mode_pop "$files" "$FINAL_EDITOR" "$merge_base" "$UPSTREAM" "$FORCE" "$DEPTH" ;;
         revert) mode_revert "$files" "$merge_base" "$FORCE" ;;
     esac
 EOF
