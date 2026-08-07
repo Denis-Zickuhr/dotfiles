@@ -44,7 +44,7 @@ PUSH_AFTER=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -h|--help) show_help;;
+        -h|--help|help) show_help;;
         -v|--version) echo "git sync v$VERSION"; exit 0;;
         --merge) USE_MERGE=true; shift;;
         --push) PUSH_AFTER=true; shift;;
