@@ -90,7 +90,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         fi
         # Default template
         if [ -z "$tmpl" ]; then
-            tmpl='## Correções (issue)\n{ticket}'
+            tmpl='{title}\n\n{ticket}'
         fi
         echo "$tmpl"
     }
