@@ -11,7 +11,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     # --- Quiver commands registry ---
     # remote: can run targeting any branch without checkout
-    QUIVER_CMDS_REMOTE="ctx pr hotfix"
+    QUIVER_CMDS_REMOTE="ctx pr hotfix sync"
     QUIVER_COMMANDS="$QUIVER_CMDS_REMOTE"
 
     get_quiver() {
@@ -75,6 +75,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "  ctx [n|.]                 Show branch context (ticket + PR)"
         echo "  pr [n|.]                  Show/create pull request"
         echo "  hotfix [n] <targets>      Cherry-pick from branch into targets"
+        echo "  sync [n|.]                Sync branch with upstream (rebase)"
         echo "  a                         Add current branch to quiver"
         echo ""
         echo -e "${GRAY}  [n] = branch index | [.] = all branches${NC}"
@@ -161,11 +162,19 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
                 echo -e "  ${GRAY}[$display_num]${NC} ${b}"
                 if [ "$b" = "$current" ]; then
-                    git "$cmd" $cmd_args 2>/dev/null | grep -v "^$" | tail -n +2 | sed 's/^/      /'
+                    local output=$(git "$cmd" $cmd_args 2>&1)
+                    local exit_code=$?
                 else
                     git checkout "$b" > /dev/null 2>&1
-                    git "$cmd" $cmd_args 2>/dev/null | grep -v "^$" | tail -n +2 | sed 's/^/      /'
+                    local output=$(git "$cmd" $cmd_args 2>&1)
+                    local exit_code=$?
                     git checkout "$current" > /dev/null 2>&1
+                fi
+
+                if [ $exit_code -ne 0 ]; then
+                    echo -e "      ${RED}✗ failed${NC} ${GRAY}(conflict or error)${NC}"
+                else
+                    echo "$output" | grep -v "^$" | tail -n +2 | sed 's/^/      /'
                 fi
                 display_num=$((display_num + 1))
             done
@@ -288,7 +297,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
         # Footer
         echo -e "${GRAY}  ──────────────────────────────────────────${NC}"
-        echo -e "  ${GRAY}${#branches[@]} branches │ ctx, pr, hotfix │ [a] add │ [h] help${NC}"
+        echo -e "  ${GRAY}${#branches[@]} branches │ ctx, pr, hotfix, sync │ [a] add │ [h] help${NC}"
         echo ""
 
         # Input
@@ -348,6 +357,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             echo -e "    ${CYAN}ctx 3${NC}          Context of branch #3"
             echo -e "    ${CYAN}ctx .${NC}          Context of all branches"
             echo -e "    ${CYAN}pr .${NC}           PR status of all branches"
+            echo -e "    ${CYAN}sync .${NC}         Sync all branches with upstream"
             echo -e "    ${CYAN}hotfix 3 master${NC} Hotfix branch #3 into master"
             echo ""
 
