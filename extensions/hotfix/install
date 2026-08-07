@@ -148,14 +148,42 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     }
 
     select_commits() {
-        UPSTREAM="origin/${TARGET_BRANCHES[0]}"
+        # Find commits unique to SOURCE_BRANCH
+        # Strategy: get commits between the fork point (where source diverged from its upstream) and HEAD
+        # This avoids pulling in develop commits that aren't in master
+
+        local fork_point=""
+
+        # Try to find where source branch forked from (its upstream tracking branch or origin/HEAD)
+        local source_upstream=$(git config --get "branch.$SOURCE_BRANCH.merge" 2>/dev/null | sed 's|refs/heads/||')
+        if [ -n "$source_upstream" ]; then
+            fork_point=$(git merge-base "origin/$source_upstream" "$SOURCE_BRANCH" 2>/dev/null)
+        fi
+
+        # Fallback: try origin/HEAD (default branch)
+        if [ -z "$fork_point" ]; then
+            local default_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+            default_branch=${default_branch:-develop}
+            fork_point=$(git merge-base "origin/$default_branch" "$SOURCE_BRANCH" 2>/dev/null)
+        fi
+
+        # Last fallback: use first target as upstream (original behavior)
+        if [ -z "$fork_point" ]; then
+            fork_point=$(git merge-base "origin/${TARGET_BRANCHES[0]}" "$SOURCE_BRANCH" 2>/dev/null)
+        fi
+
+        if [ -z "$fork_point" ]; then
+            error "Could not determine fork point for '$SOURCE_BRANCH'."
+            exit 1
+        fi
+
         COMMITS_RAW=()
         while IFS= read -r line; do
             COMMITS_RAW+=("$line")
-        done < <(git cherry -v "$UPSTREAM" "$SOURCE_BRANCH" | grep '^+' | sed 's/^+ //')
+        done < <(git log --format="%H %s" "$fork_point..$SOURCE_BRANCH" --reverse 2>/dev/null)
 
         if [ ${#COMMITS_RAW[@]} -eq 0 ]; then
-            error "No unique commits found on '$SOURCE_BRANCH' vs '$UPSTREAM'."
+            error "No unique commits found on '$SOURCE_BRANCH'."
             exit 1
         fi
 
@@ -171,19 +199,18 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
         # Smart prompt
         if [[ "$PICKY" == true ]]; then
-            # Straight to pick mode
             pick_commits
         elif [ ${#COMMITS_RAW[@]} -eq 1 ]; then
-            # Single commit — just confirm
             printf "Apply this commit to ${TARGET_BRANCHES[*]}? [Y/n] "
             read -r answer < /dev/tty
             case "$answer" in
                 [nN][oO]|[nN]) echo -e "${YELLOW}Cancelled.${NC}"; exit 0 ;;
             esac
             local line="${COMMITS_RAW[0]}"
-            SELECTED_COMMITS+=("$(echo "$line" | awk '{print $1}')|$(echo "$line" | cut -d' ' -f2-)")
+            local hash=$(echo "$line" | awk '{print $1}')
+            local msg=$(echo "$line" | cut -d' ' -f2-)
+            SELECTED_COMMITS+=("${hash}|${msg}")
         else
-            # Multiple commits — ask
             printf "Apply all ${#COMMITS_RAW[@]} commits? [Y/pick/n] "
             read -r answer < /dev/tty
             case "$answer" in
@@ -194,9 +221,10 @@ SCRIPT_CONTENT=$(cat <<'EOF'
                     pick_commits
                     ;;
                 *)
-                    # All commits
                     for line in "${COMMITS_RAW[@]}"; do
-                        SELECTED_COMMITS+=("$(echo "$line" | awk '{print $1}')|$(echo "$line" | cut -d' ' -f2-)")
+                        local hash=$(echo "$line" | awk '{print $1}')
+                        local msg=$(echo "$line" | cut -d' ' -f2-)
+                        SELECTED_COMMITS+=("${hash}|${msg}")
                     done
                     ;;
             esac
@@ -212,7 +240,9 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#COMMITS_RAW[@]}" ]; then
                 local idx=$((num-1))
                 local line="${COMMITS_RAW[$idx]}"
-                SELECTED_COMMITS+=("$(echo "$line" | awk '{print $1}')|$(echo "$line" | cut -d' ' -f2-)")
+                local hash=$(echo "$line" | awk '{print $1}')
+                local msg=$(echo "$line" | cut -d' ' -f2-)
+                SELECTED_COMMITS+=("${hash}|${msg}")
             fi
         done
         if [ ${#SELECTED_COMMITS[@]} -eq 0 ]; then
