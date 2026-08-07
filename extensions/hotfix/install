@@ -2,11 +2,10 @@
 
 SCRIPT_CONTENT=$(cat <<'EOF'
 
-    # colors
-    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+    VERSION="1.1.0"
+    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     # globals
-    VERSION="1.0.0"
     SOURCE_BRANCH=""
     TARGET_BRANCHES_RAW=""
     FORCE_PUSH=false
@@ -18,58 +17,58 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     START_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
 
     show_help() {
-        cat <<-MSG
-Usage: git hotfix -f <source> -i <target1,target2>
-
-Automates hotfix creation and PR generation.
-
-    -f, --from <source>     (Required) The source branch containing commits.
-    -i, --into <targets>    (Required) Comma-separated|Space list of target branches.
-    --force                 Force pushes the branch creation over origin.
-    -p, --picky             Allows the commits to be individually picked.
-    -v, --version           Display version information.
-    -h, --help              Display this help message.
-
-Example:
-    git hotfix -f feat/login-fix -i develop,staging
-MSG
+        echo -e "${CYAN}git hotfix v$VERSION${NC}"
+        echo ""
+        echo "Cherry-pick commits into multiple target branches with PR links."
+        echo ""
+        echo -e "${YELLOW}Usage:${NC}"
+        echo "  git hotfix -i <targets>                  From current branch"
+        echo "  git hotfix -f <source> -i <targets>      From specific branch"
+        echo ""
+        echo -e "${YELLOW}Options:${NC}"
+        echo "  -i, --into <t1,t2>    Target branches (comma or space separated)"
+        echo "  -f, --from <branch>   Source branch (default: current)"
+        echo "  -p, --picky           Go straight to pick mode (skip prompt)"
+        echo "  --force               Force push"
+        echo "  -h, --help            Show this help"
+        echo "  -v, --version         Show version"
+        echo ""
+        echo -e "${YELLOW}Examples:${NC}"
+        echo "  git hotfix -i master release-0708"
+        echo "  git hotfix -i master,release-0708"
+        echo "  git hotfix -f fix-branch -i master release-0708"
+        echo ""
+        echo -e "${YELLOW}Flow:${NC}"
+        echo "  1. Detects unique commits on source vs first target"
+        echo "  2. Shows commits and asks: All / Pick / Cancel"
+        echo "  3. Shows review summary"
+        echo "  4. Cherry-picks into each target, pushes, generates PR links"
         exit 0
     }
 
-    log() {
-      echo -e "${CYAN}[INFO]${NC} $1";
-    }
-
-    error() {
-      echo -e "${RED}[ERROR]${NC} $1";
-    }
+    log() { echo -e "${CYAN}▸${NC} $1"; }
+    error() { echo -e "${RED}✗${NC} $1"; }
 
     rollback() {
-        echo -e "\n${YELLOW}Aborted. Rolling back changes...${NC}";
+        echo -e "\n${YELLOW}Rolling back...${NC}"
         if [[ -n "$START_BRANCH" ]]; then git checkout "$START_BRANCH" &> /dev/null; fi
 
         local pushed_branches=()
-
         for b in "${CREATED_BRANCHES[@]}"; do
             if git ls-remote --heads origin "$b" 2>/dev/null | grep -q "$b"; then
                 pushed_branches+=("$b")
             fi
-            log "Deleting local branch: $b"
             git branch -D "$b" &> /dev/null
         done
 
         if [[ ${#pushed_branches[@]} -gt 0 ]]; then
-            echo -e "\n${YELLOW}[WARNING]${NC} The following branches were already pushed to remote and were ${RED}NOT${NC} removed automatically:"
-            for rb in "${pushed_branches[@]}"; do
-                echo -e "  ${CYAN}-${NC} $rb"
-            done
-            echo -e "\n${YELLOW}To remove them manually, run:${NC}"
+            echo -e "${YELLOW}Branches already pushed (remove manually):${NC}"
             for rb in "${pushed_branches[@]}"; do
                 echo -e "  git push origin --delete $rb"
             done
         fi
 
-        echo -e "\n${GREEN}Rollback complete. You are back on ${START_BRANCH}.${NC}"
+        echo -e "${GREEN}Back on ${START_BRANCH}.${NC}"
         exit 1
     }
 
@@ -77,84 +76,73 @@ MSG
         local raw="$1"
         local CLEAN_LIST="${raw//,/ }"
         local result=()
-
         for branch in $CLEAN_LIST; do
             [[ -z "$branch" ]] && continue
-
             local exists=0
             for existing in "${result[@]}"; do
                 [[ "$existing" == "$branch" ]] && exists=1 && break
             done
-
             [[ $exists -eq 0 ]] && result+=("$branch")
         done
-
         echo "${result[@]}"
     }
 
     parse_args() {
-          while [[ "$#" -gt 0 ]]; do
-              case "$1" in
-                  --from|-f)
-                      SOURCE_BRANCH="$2"
-                      shift
-                      ;;
-                  --force)
-                      FORCE_PUSH=true
-                      ;;
-                  --picky|-p)
-                      PICKY=true
-                      ;;
-                  --into|-i)
-                      TARGET_BRANCHES_RAW="$2"
-                      shift
-
-                      while [[ "$#" -gt 1 && ! "$2" =~ ^- ]]; do
-                          TARGET_BRANCHES_RAW="${TARGET_BRANCHES_RAW} $2"
-                          shift
-                      done
-                      ;;
-                  -v|--version)
-                      echo "git hotfix v$VERSION"
-                      exit 0
-                      ;;
-                  -h|--help)
-                      show_help
-                      ;;
-                  *)
-                      error "Unknown: $1"
-                      show_help
-                      ;;
-              esac
-              shift
-          done
+        while [[ "$#" -gt 0 ]]; do
+            case "$1" in
+                --from|-f)  SOURCE_BRANCH="$2"; shift ;;
+                --force)    FORCE_PUSH=true ;;
+                --picky|-p) PICKY=true ;;
+                --into|-i)
+                    TARGET_BRANCHES_RAW="$2"
+                    shift
+                    while [[ "$#" -gt 1 && ! "$2" =~ ^- ]]; do
+                        TARGET_BRANCHES_RAW="${TARGET_BRANCHES_RAW} $2"
+                        shift
+                    done
+                    ;;
+                -v|--version) echo "git hotfix v$VERSION"; exit 0 ;;
+                -h|--help)    show_help ;;
+                *)
+                    # Treat bare args as targets if -i wasn't used
+                    if [[ -z "$TARGET_BRANCHES_RAW" ]]; then
+                        TARGET_BRANCHES_RAW="$1"
+                        while [[ "$#" -gt 1 && ! "$2" =~ ^- ]]; do
+                            TARGET_BRANCHES_RAW="${TARGET_BRANCHES_RAW} $2"
+                            shift
+                        done
+                    else
+                        error "Unknown: $1"
+                        show_help
+                    fi
+                    ;;
+            esac
+            shift
+        done
     }
 
     validate_inputs() {
-
         if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-            error "Not a git repo."
-            exit 1
+            error "Not a git repo."; exit 1
         fi
 
         SOURCE_BRANCH=${SOURCE_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}
 
-        if [[ -z "$SOURCE_BRANCH" || -z "$TARGET_BRANCHES_RAW" ]]; then
-            error "Missing parameters."
-            show_help
+        if [[ -z "$TARGET_BRANCHES_RAW" ]]; then
+            error "Target branches required."
+            echo -e "${GRAY}Usage: git hotfix -i master release-0708${NC}"
+            exit 1
         fi
 
         TARGET_BRANCHES=($(get_target_branches "$TARGET_BRANCHES_RAW"))
 
         if [[ ${#TARGET_BRANCHES[@]} -eq 0 ]]; then
-            error "No valid target branches found."
-            exit 1
+            error "No valid target branches."; exit 1
         fi
 
         if ! git show-ref --verify --quiet "refs/heads/$SOURCE_BRANCH"; then
             if ! git show-ref --verify --quiet "refs/remotes/origin/$SOURCE_BRANCH"; then
-                error "Source '$SOURCE_BRANCH' not found."
-                exit 1
+                error "Source '$SOURCE_BRANCH' not found."; exit 1
             fi
         fi
     }
@@ -162,28 +150,73 @@ MSG
     select_commits() {
         UPSTREAM="origin/${TARGET_BRANCHES[0]}"
         COMMITS_RAW=()
-        while IFS= read -r line; do COMMITS_RAW+=("$line"); done < <(git cherry -v "$UPSTREAM" "$SOURCE_BRANCH" | grep '^+' | sed 's/^+ //')
+        while IFS= read -r line; do
+            COMMITS_RAW+=("$line")
+        done < <(git cherry -v "$UPSTREAM" "$SOURCE_BRANCH" | grep '^+' | sed 's/^+ //')
 
         if [ ${#COMMITS_RAW[@]} -eq 0 ]; then
-            error "No unique commits found."; exit 1
+            error "No unique commits found on '$SOURCE_BRANCH' vs '$UPSTREAM'."
+            exit 1
         fi
 
+        # Show commits
+        echo ""
+        echo -e "${CYAN}Commits on ${GREEN}$SOURCE_BRANCH${NC} ${CYAN}(${#COMMITS_RAW[@]}):${NC}"
+        for idx in "${!COMMITS_RAW[@]}"; do
+            local hash=$(echo "${COMMITS_RAW[$idx]}" | awk '{print $1}')
+            local msg=$(echo "${COMMITS_RAW[$idx]}" | cut -d' ' -f2-)
+            echo -e "  ${GRAY}$((idx+1)))${NC} ${hash:0:7} $msg"
+        done
+        echo ""
+
+        # Smart prompt
         if [[ "$PICKY" == true ]]; then
-            echo -e "\n${YELLOW}--- Select Commits ---${NC}"
-            for idx in "${!COMMITS_RAW[@]}"; do printf "%3d) %s\n" $((idx+1)) "${COMMITS_RAW[$idx]}"; done
-            echo ""
-            read -p "Enter numbers (space separated, oldest first): " SELECTION
-            [[ -z "$SELECTION" ]] && { error "None selected."; exit 1; }
-            for num in $SELECTION; do
-                idx=$((num-1))
-                RAW="${COMMITS_RAW[$idx]}"
-                SELECTED_COMMITS+=("$(echo "$RAW" | awk '{print $1}')|$(echo "$RAW" | cut -d' ' -f2-)")
-            done
+            # Straight to pick mode
+            pick_commits
+        elif [ ${#COMMITS_RAW[@]} -eq 1 ]; then
+            # Single commit — just confirm
+            printf "Apply this commit to ${TARGET_BRANCHES[*]}? [Y/n] "
+            read -r answer < /dev/tty
+            case "$answer" in
+                [nN][oO]|[nN]) echo -e "${YELLOW}Cancelled.${NC}"; exit 0 ;;
+            esac
+            local line="${COMMITS_RAW[0]}"
+            SELECTED_COMMITS+=("$(echo "$line" | awk '{print $1}')|$(echo "$line" | cut -d' ' -f2-)")
         else
-            log "Auto-collecting ${#COMMITS_RAW[@]} commits..."
-            for line in "${COMMITS_RAW[@]}"; do
+            # Multiple commits — ask
+            printf "Apply all ${#COMMITS_RAW[@]} commits? [Y/pick/n] "
+            read -r answer < /dev/tty
+            case "$answer" in
+                [nN][oO]|[nN])
+                    echo -e "${YELLOW}Cancelled.${NC}"; exit 0
+                    ;;
+                [pP]|[pP][iI][cC][kK]|pick)
+                    pick_commits
+                    ;;
+                *)
+                    # All commits
+                    for line in "${COMMITS_RAW[@]}"; do
+                        SELECTED_COMMITS+=("$(echo "$line" | awk '{print $1}')|$(echo "$line" | cut -d' ' -f2-)")
+                    done
+                    ;;
+            esac
+        fi
+    }
+
+    pick_commits() {
+        echo -e "${YELLOW}Enter commit numbers (space separated):${NC}"
+        local selection
+        read -p "> " selection < /dev/tty
+        [[ -z "$selection" ]] && { error "None selected."; exit 1; }
+        for num in $selection; do
+            if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#COMMITS_RAW[@]}" ]; then
+                local idx=$((num-1))
+                local line="${COMMITS_RAW[$idx]}"
                 SELECTED_COMMITS+=("$(echo "$line" | awk '{print $1}')|$(echo "$line" | cut -d' ' -f2-)")
-            done
+            fi
+        done
+        if [ ${#SELECTED_COMMITS[@]} -eq 0 ]; then
+            error "No valid commits selected."; exit 1
         fi
     }
 
@@ -197,8 +230,21 @@ MSG
         echo "$remote/compare/$base...$head?expand=1"
     }
 
+    review_and_confirm() {
+        echo -e "${GRAY}──────────────────────────────────────${NC}"
+        echo -e "  Source:  ${GREEN}$SOURCE_BRANCH${NC}"
+        echo -e "  Targets: ${GREEN}${TARGET_BRANCHES[*]}${NC}"
+        echo -e "  Commits: ${GREEN}${#SELECTED_COMMITS[@]}${NC}"
+        echo -e "${GRAY}──────────────────────────────────────${NC}"
+        echo ""
+        printf "Push? [Y/n] "
+        read -r confirm < /dev/tty
+        case "$confirm" in
+            [nN][oO]|[nN]) echo -e "${YELLOW}Cancelled.${NC}"; exit 0 ;;
+        esac
+    }
+
     process_hotfix_targets() {
-        # Ensure necessary variables exist or receive default values
         local source_branch="${SOURCE_BRANCH:-}"
         local force_push="${FORCE_PUSH:-}"
 
@@ -206,11 +252,11 @@ MSG
             log "Processing target: $into"
 
             if ! git checkout "$into" > /dev/null 2>&1; then
-                error "Checkout $into failed"; rollback; return 1;
+                error "Checkout $into failed"; rollback; return 1
             fi
 
             if ! git pull origin "$into" --rebase &> /dev/null; then
-                error "Pull $into failed"; rollback; return 1;
+                error "Pull $into failed"; rollback; return 1
             fi
 
             local safe_src="${source_branch//\//-}"
@@ -221,19 +267,17 @@ MSG
             fi
 
             if ! git checkout -b "$hotfix_b" &> /dev/null; then
-                error "Branch creation failed for $hotfix_b"; rollback; return 1;
+                error "Branch creation failed for $hotfix_b"; rollback; return 1
             fi
 
             CREATED_BRANCHES+=("$hotfix_b")
 
-            # Cherry-pick commits
             for item in "${SELECTED_COMMITS[@]}"; do
                 local hash msg
                 IFS='|' read -r hash msg <<< "$item"
 
-                log "Adding commit $hash"
                 if ! git cherry-pick "$hash" > /dev/null 2>&1; then
-                    error "Conflict on $hash while targeting $into."
+                    error "Conflict on $hash ($msg) targeting $into."
                     git cherry-pick --abort &> /dev/null
                     rollback
                     return 1
@@ -243,54 +287,33 @@ MSG
             local push_args="-u origin $hotfix_b"
             [[ "$force_push" == true ]] && push_args="--force $push_args"
 
-            log "Pushing $hotfix_b (Force: $force_push)..."
-
             if ! git push $push_args &> /dev/null; then
-                error "Push failed for $hotfix_b"; rollback; return 1;
+                error "Push failed for $hotfix_b"; rollback; return 1
             fi
 
-            # Generate PR link
-            local link
-            link=$(generate_pr_link "$into" "$hotfix_b")
-            PR_LINKS+=("Target [$into]: $link")
+            local link=$(generate_pr_link "$into" "$hotfix_b")
+            PR_LINKS+=("$link")
+            echo -e "  ${GREEN}✓${NC} $into → $hotfix_b"
         done
     }
 
-    review_and_confirm() {
-        echo -e "\n${YELLOW}--- Review Before Pushing ---${NC}"
-        echo -e "Source:    ${GREEN}${SOURCE_BRANCH}${NC}"
-        echo -e "Targets:   ${GREEN}${TARGET_BRANCHES[*]}${NC}"
-        echo -e "Commits:   ${GREEN}${#SELECTED_COMMITS[@]}${NC}"
-        echo "----------------------------"
-
-        read -p "Proceed? (y/yes to confirm): " CONFIRM
-        local lower_confirm=$(echo "$CONFIRM" | tr "[:upper:]" "[:lower:]")
-
-        if [[ "$lower_confirm" != "y" && "$lower_confirm" != "yes" ]]; then
-            rollback
-        fi
-
-        echo -e "\n${GREEN}Confirmed. Processing...${NC}"
-    }
-
     finish_execution() {
-        echo -e "\n${GREEN}=== Success ===${NC}"
-
         if [[ -n "$START_BRANCH" ]]; then
             git checkout "$START_BRANCH" > /dev/null 2>&1
         fi
 
+        echo ""
+        echo -e "${GREEN}Done.${NC} PR links:"
         for link in "${PR_LINKS[@]}"; do
-            echo -e "$link"
+            echo -e "  ${CYAN}$link${NC}"
         done
+        echo ""
     }
 
     parse_args "$@"
     validate_inputs
     select_commits
-    if [[ "$PICKY" == true ]]; then
-      review_and_confirm
-    fi
+    review_and_confirm
     process_hotfix_targets
     finish_execution
 EOF
