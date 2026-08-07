@@ -17,6 +17,7 @@ Options:
     --set-provider <p>  Set the ticket provider (jira, linear, github-issues)
     --set-domain <d>    Set the provider domain/workspace
     --set-prefix <x>    Set a custom URL prefix (overrides provider logic)
+    --setup             Interactive provider setup
     --show-config       Show current ctx configuration
     --clear             Remove all ctx configuration
     -h, --help          Show this help message
@@ -163,6 +164,56 @@ MSG
         fi
     }
 
+    setup_interactive() {
+        echo -e "${CYAN}ctx provider setup${NC}"
+        echo ""
+        echo -e "  ${GRAY}1)${NC} jira          ${GRAY}(Atlassian Jira)${NC}"
+        echo -e "  ${GRAY}2)${NC} linear        ${GRAY}(Linear.app)${NC}"
+        echo -e "  ${GRAY}3)${NC} github-issues ${GRAY}(GitHub Issues)${NC}"
+        echo -e "  ${GRAY}4)${NC} custom        ${GRAY}(Custom URL prefix)${NC}"
+        echo ""
+
+        local choice
+        read -p "  Choose provider: " choice < /dev/tty
+
+        case "$choice" in
+            1|jira)
+                read -p "  Jira domain (e.g., mycompany.atlassian.net): " domain < /dev/tty
+                [ -z "$domain" ] && { echo -e "${RED}Domain required.${NC}"; return; }
+                [[ "$domain" != *".atlassian.net"* ]] && [[ "$domain" != *"."* ]] && domain="${domain}.atlassian.net"
+                set_config "provider" "jira"
+                set_config "domain" "$domain"
+                git config --global --unset ctx.prefix 2>/dev/null || true
+                echo -e "${GREEN}✓ Provider: jira (${domain})${NC}"
+                ;;
+            2|linear)
+                read -p "  Linear workspace slug: " workspace < /dev/tty
+                [ -z "$workspace" ] && { echo -e "${RED}Workspace required.${NC}"; return; }
+                set_config "provider" "linear"
+                set_config "domain" "$workspace"
+                git config --global --unset ctx.prefix 2>/dev/null || true
+                echo -e "${GREEN}✓ Provider: linear (${workspace})${NC}"
+                ;;
+            3|github-issues|github)
+                set_config "provider" "github-issues"
+                git config --global --unset ctx.domain 2>/dev/null || true
+                git config --global --unset ctx.prefix 2>/dev/null || true
+                echo -e "${GREEN}✓ Provider: github-issues (auto-detected from remote)${NC}"
+                ;;
+            4|custom)
+                read -p "  URL prefix (e.g., https://tracker.com/browse/): " prefix < /dev/tty
+                [ -z "$prefix" ] && { echo -e "${RED}Prefix required.${NC}"; return; }
+                [[ "$prefix" != */ ]] && prefix="${prefix}/"
+                set_config "provider" "custom"
+                set_config "prefix" "$prefix"
+                echo -e "${GREEN}✓ Provider: custom (${prefix})${NC}"
+                ;;
+            *)
+                echo -e "${YELLOW}Cancelled.${NC}"
+                ;;
+        esac
+    }
+
     # --- Main ---
     case "$1" in
         -b|--branch)
@@ -207,6 +258,9 @@ MSG
             ;;
         --show-config)
             show_config
+            ;;
+        --setup)
+            setup_interactive
             ;;
         --clear)
             clear_config
