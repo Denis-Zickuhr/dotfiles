@@ -16,20 +16,9 @@ SCRIPT_CONTENT=$(cat <<'EOF'
       echo "  -m, --message <msg>    Custom commit message body"
       echo "  -s, --scope <scope>    Force a specific scope"
       echo "  -op, --omit-prefix     Omit the prefix (ticket) from the commit"
-      echo "  --no-scope             Disable scope detection"
       echo "  -h, --help             Show help"
       echo "  -v, --version          Show version"
       echo ""
-      echo -e "${YELLOW}Scope detection (in order):${NC}"
-      echo "  1. --scope flag (manual)"
-      echo "  2. Staged files (if all in same top-level dir)"
-      echo "  3. Branch name (if contains a known dir name)"
-      echo ""
-      echo -e "${YELLOW}Examples:${NC}"
-      echo "  Branch: MAG-123-feat-ajuste-bling     → MAG-123 - feat(bling): ajuste"
-      echo "  Branch: feat-global-logging           → feat(global): logging"
-      echo "  Branch: MAG-456-fix-correcoes-padrao  → MAG-456 - fix: correcoes padrao"
-      echo "    (no scope if files span multiple dirs)"
     }
 
     error_exit() {
@@ -41,49 +30,11 @@ SCRIPT_CONTENT=$(cat <<'EOF'
       echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
     fi
 
-    # --- Scope detection ---
-
-    detect_scope_from_files() {
-        # Check staged files — if all share the same top-level directory, that's the scope
-        # If multiple dirs and repo has a "global/" dir (monorepo pattern), scope = "global"
-        local staged=$(git diff --cached --name-only 2>/dev/null)
-        [ -z "$staged" ] && return
-
-        local dirs=$(echo "$staged" | grep "/" | cut -d/ -f1 | sort -u)
-        local dir_count=$(echo "$dirs" | grep -c . 2>/dev/null)
-
-        if [ "$dir_count" -eq 1 ]; then
-            local scope_dir=$(echo "$dirs" | head -1)
-            if [ -d "$scope_dir" ]; then
-                echo "$scope_dir"
-            fi
-        elif [ "$dir_count" -gt 1 ] && [ -d "global" ]; then
-            echo "global"
-        fi
-    }
-
-    detect_scope_from_branch() {
-        local branch=$1
-        # Get list of top-level directories as possible scopes
-        local known_scopes=$(ls -d */ 2>/dev/null | sed 's|/||')
-        [ -z "$known_scopes" ] && return
-
-        # Check if any scope name appears in the branch name
-        for scope in $known_scopes; do
-            if echo "$branch" | grep -qiE "(^|[-/])${scope}([-/]|$)"; then
-                echo "$scope"
-                return
-            fi
-        done
-    }
-
     # --- Parse args ---
 
     CT="feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert"
     CUSTOM_MESSAGE=""
     OMIT_PREFIX=false
-    FORCED_SCOPE=""
-    NO_SCOPE=false
     NO_VERIFY=false
 
     while [ $# -gt 0 ]; do
@@ -99,9 +50,8 @@ SCRIPT_CONTENT=$(cat <<'EOF'
           if [ -z "$2" ]; then
             error_exit "The '$1' flag requires a scope."; exit 1
           fi
-          FORCED_SCOPE="$2"; shift; shift;;
+          SCOPE="$2"; shift; shift;;
         -op|--omit-prefix) OMIT_PREFIX=true; shift;;
-        --no-scope) NO_SCOPE=true; shift;;
         --no-verify) NO_VERIFY=true; shift;;
         *) error_exit "Unknown option: $1"; exit 1;;
       esac
@@ -137,27 +87,6 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         error_exit "Branch format invalid. Use '[PREFIX-]<type>-<desc>'."; exit 1
         ;;
     esac
-
-    # --- Resolve scope ---
-
-    SCOPE=""
-    if [ "$NO_SCOPE" = false ]; then
-        if [ -n "$FORCED_SCOPE" ]; then
-            SCOPE="$FORCED_SCOPE"
-        else
-            # Try files first
-            SCOPE=$(detect_scope_from_files)
-            # Fallback: branch name
-            if [ -z "$SCOPE" ]; then
-                SCOPE=$(detect_scope_from_branch "$BRANCH_NAME")
-            fi
-        fi
-
-        # Remove scope from description if present (avoid "feat(bling): ajuste bling")
-        if [ -n "$SCOPE" ]; then
-            DESCRIPTION=$(echo "$DESCRIPTION" | sed -E "s/(^|-)${SCOPE}(-|$)/\1/;s/^-//;s/-$//;s/--/-/g")
-        fi
-    fi
 
     # --- Build message ---
 
