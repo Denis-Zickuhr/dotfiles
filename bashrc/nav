@@ -1,7 +1,4 @@
 #!/bin/bash
-# nav - A simple navigation manager
-# Oriented to functions
-
 NAV_CONFIG_FILE="$HOME/.navm_aliases"
 
 __nav_ensure_config() {
