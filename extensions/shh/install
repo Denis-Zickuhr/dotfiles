@@ -1,0 +1,130 @@
+#!/bin/bash
+
+# shh 🤫 — cause nobody saw what you did
+# Author: Denis-Zickuhr <coringatheboss@gmail.com>
+
+SCRIPT_CONTENT=$(cat <<'EOF'
+#!/bin/bash
+
+VERSION="1.0.0"
+GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+
+show_help() {
+    echo -e "${CYAN}git shh${NC} 🤫 — cause nobody saw what you did"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC} git shh [options] [path...]"
+    echo ""
+    echo "Stages changes, amends them into the last commit, and force-pushes"
+    echo "with --force-with-lease (safe force). By default stages everything (-A)."
+    echo ""
+    echo -e "${YELLOW}Options:${NC}"
+    echo "  -p, --path <path>   Path to stage (repeatable). Default: all changes"
+    echo "  -y, --yes           Skip confirmation prompt"
+    echo "  -f, --force         Use plain --force instead of --force-with-lease"
+    echo "  -h, --help          Show this help message"
+    echo "  -v, --version       Show version"
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  git shh                     Stage all, amend, safe force-push (asks first)"
+    echo "  git shh -p src -p lib       Stage only src and lib"
+    echo "  git shh -y                  Skip the confirmation prompt"
+}
+
+# --- Guards ---
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo -e "${RED}Error: Not in a git repository.${NC}"; return 2>/dev/null || exit 1
+fi
+
+FORCE_YES=false
+HARD_FORCE=false
+PATHS=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help) show_help; return 2>/dev/null || exit 0;;
+        -v|--version) echo "git shh v$VERSION"; return 2>/dev/null || exit 0;;
+        -y|--yes) FORCE_YES=true; shift;;
+        -f|--force) HARD_FORCE=true; shift;;
+        -p|--path)
+            if [ -z "${2:-}" ]; then
+                echo -e "${RED}Error: Missing value for $1${NC}"; return 2>/dev/null || exit 1
+            fi
+            PATHS+=("$2"); shift 2;;
+        -*)
+            echo -e "${RED}Error: Unknown option '$1'${NC}"; show_help; return 2>/dev/null || exit 1;;
+        *)
+            PATHS+=("$1"); shift;;
+    esac
+done
+
+# --- Must have a commit to amend ---
+if ! git rev-parse HEAD > /dev/null 2>&1; then
+    echo -e "${RED}Error: No commits yet. Nothing to amend.${NC}"; return 2>/dev/null || exit 1
+fi
+
+# --- Stage ---
+if [ ${#PATHS[@]} -gt 0 ]; then
+    if ! git add -- "${PATHS[@]}"; then
+        echo -e "${RED}Error: Failed to stage paths.${NC}"; return 2>/dev/null || exit 1
+    fi
+else
+    if ! git add -A; then
+        echo -e "${RED}Error: Failed to stage changes.${NC}"; return 2>/dev/null || exit 1
+    fi
+fi
+
+# --- Nothing staged? bail out ---
+if git diff --staged --quiet; then
+    echo -e "${YELLOW}Nothing staged. Working tree clean 🤫${NC}"; return 2>/dev/null || exit 0
+fi
+
+# --- Confirm ---
+if [ "$FORCE_YES" = false ]; then
+    echo -e "${CYAN}shh 🤫${NC}"
+    git status --short
+    echo ""
+    printf "Amend into last commit and force-push? [y/N] "
+    read -r CONFIRM
+    if [[ ! "$CONFIRM" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]; then
+        echo -e "${YELLOW}Reverting staged changes...${NC}"
+        if [ ${#PATHS[@]} -gt 0 ]; then
+            git restore --staged -- "${PATHS[@]}" 2>/dev/null || git reset HEAD -- "${PATHS[@]}" > /dev/null 2>&1
+        else
+            git restore --staged . 2>/dev/null || git reset HEAD > /dev/null 2>&1
+        fi
+        echo -e "${CYAN}Aborted.${NC}"
+        return 2>/dev/null || exit 0
+    fi
+fi
+
+# --- Amend ---
+if ! git commit --amend --no-verify --no-edit; then
+    echo -e "${RED}Error: Amend failed.${NC}"; return 2>/dev/null || exit 1
+fi
+
+# --- Push ---
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+if [ "$HARD_FORCE" = true ]; then
+    PUSH_MSG="force-pushing (plain --force)"
+    if ! git push --force; then
+        echo -e "${RED}Error: Push failed.${NC}"; return 2>/dev/null || exit 1
+    fi
+else
+    PUSH_MSG="force-pushing (--force-with-lease)"
+    if ! git push --force-with-lease; then
+        echo -e "${RED}Error: Push failed (someone else may have pushed). Use -f to override.${NC}"
+        return 2>/dev/null || exit 1
+    fi
+fi
+
+echo -e "${GREEN}✔ shh 🤫 done.${NC} ${CYAN}${BRANCH}${NC} ${PUSH_MSG%% *}"
+EOF
+)
+
+ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
+
+git config --global alias.shh "!f() {
+    bash -c '$ESCAPED_CODE' -- \"\$@\"
+}; f"
+
+echo "✔ git shh alias installed."
