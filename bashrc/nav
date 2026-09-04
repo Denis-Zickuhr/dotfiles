@@ -1,8 +1,11 @@
 #!/bin/bash
 # nav - A simple navigation manager
+# Oriented to functions
 
 NAV_ALIASES_FILE="$HOME/.navm_aliases"
 NAV_CONFIG_FILE="$HOME/.navm_config"
+
+# ─── Config helpers ───────────────────────────────────────────────────────────
 
 __nav_ensure_aliases() {
     touch "$NAV_ALIASES_FILE"
@@ -12,14 +15,6 @@ __nav_ensure_config() {
     if [ ! -f "$NAV_CONFIG_FILE" ]; then
         printf "opener=explorer.exe\n[openers]\n" > "$NAV_CONFIG_FILE"
     fi
-}
-
-__nav_msg() {
-    printf "nav: %s\n" "$1"
-}
-
-__nav_err() {
-    printf "nav: %s\n" "$1" >&2
 }
 
 __nav_config_get_opener() {
@@ -36,10 +31,11 @@ __nav_config_set_opener() {
     else
         sed -i "1i opener=${value}" "$NAV_CONFIG_FILE"
     fi
-    __nav_msg "opener set to '${value}'"
+    echo "Opener set to '${value}'."
 }
 
 __nav_config_get_openers() {
+    # Returns lines after [openers] marker
     sed -n '/^\[openers\]$/,$ { /^\[openers\]$/d; p }' "$NAV_CONFIG_FILE" 2>/dev/null
 }
 
@@ -48,16 +44,16 @@ __nav_config_openers_list() {
     openers=$(__nav_config_get_openers)
 
     if [ -z "$openers" ]; then
-        __nav_msg "no openers configured"
+        echo "No openers configured."
         return 1
     fi
 
+    echo "Configured openers:"
     local i=1
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         local desc="${line%% - *}"
-        local cmd="${line##* - }"
-        printf "  %d. %s (%s)\n" "$i" "$desc" "$cmd"
+        printf "  [%d] %s\n" "$i" "$desc"
         i=$((i + 1))
     done <<< "$openers"
 }
@@ -66,28 +62,30 @@ __nav_config_openers_add() {
     local entry="$1"
 
     if [ -z "$entry" ]; then
-        printf "usage: nav config openers add \"<desc> - <command>\"\n" >&2
+        echo "Usage: nav config openers add \"<desc> - <command>\"" >&2
         return 1
     fi
 
+    # Validate format
     if [[ "$entry" != *" - "* ]]; then
-        __nav_err "format must be \"<desc> - <command>\""
+        echo "Error: Format must be \"<desc> - <command>\"." >&2
         return 1
     fi
 
+    # Ensure [openers] section exists
     if ! grep -q "^\[openers\]$" "$NAV_CONFIG_FILE" 2>/dev/null; then
         echo "[openers]" >> "$NAV_CONFIG_FILE"
     fi
 
     echo "$entry" >> "$NAV_CONFIG_FILE"
-    __nav_msg "added '${entry}'"
+    echo "Opener added: ${entry}"
 }
 
 __nav_config_openers_remove() {
     local num="$1"
 
     if [ -z "$num" ] || ! [[ "$num" =~ ^[0-9]+$ ]]; then
-        printf "usage: nav config openers remove <number>\n" >&2
+        echo "Usage: nav config openers remove <number>" >&2
         return 1
     fi
 
@@ -95,7 +93,7 @@ __nav_config_openers_remove() {
     openers=$(__nav_config_get_openers)
 
     if [ -z "$openers" ]; then
-        __nav_err "no openers configured"
+        echo "No openers configured." >&2
         return 1
     fi
 
@@ -111,45 +109,47 @@ __nav_config_openers_remove() {
     done <<< "$openers"
 
     if [ -z "$target_line" ]; then
-        __nav_err "invalid number (see: nav config openers list)"
+        echo "Error: Invalid number. Use 'nav config openers list' to see available options." >&2
         return 1
     fi
 
+    # Escape special characters for sed
     local escaped
     escaped=$(printf '%s\n' "$target_line" | sed 's/[[\.*^$()+?{|]/\\&/g')
     sed -i "/^${escaped}$/d" "$NAV_CONFIG_FILE"
-    __nav_msg "removed '${target_line}'"
+    echo "Removed: ${target_line}"
 }
 
 __nav_config_show() {
-    printf "\n"
-    printf "  opener: %s\n" "$(__nav_config_get_opener)"
-    printf "\n"
+    echo "─── NAV Configuration ───"
+    echo ""
+    echo "  Opener: $(__nav_config_get_opener)"
+    echo ""
 
     local openers
     openers=$(__nav_config_get_openers)
 
     if [ -n "$openers" ]; then
-        printf "  openers:\n"
+        echo "  Openers list (ASK mode):"
         local i=1
         while IFS= read -r line; do
             [ -z "$line" ] && continue
             local desc="${line%% - *}"
             local cmd="${line##* - }"
-            printf "    %d. %s → %s\n" "$i" "$desc" "$cmd"
+            printf "    [%d] %s (%s)\n" "$i" "$desc" "$cmd"
             i=$((i + 1))
         done <<< "$openers"
     else
-        printf "  openers: (none)\n"
+        echo "  Openers list: (empty)"
     fi
-    printf "\n"
+    echo ""
 }
 
 __nav_config() {
     case "$1" in
         opener)
             if [ -z "$2" ]; then
-                printf "opener: %s\n" "$(__nav_config_get_opener)"
+                echo "Current opener: $(__nav_config_get_opener)"
             else
                 __nav_config_set_opener "$2"
             fi
@@ -160,7 +160,7 @@ __nav_config() {
                 remove) __nav_config_openers_remove "$3" ;;
                 list)   __nav_config_openers_list ;;
                 *)
-                    printf "usage: nav config openers <add|remove|list>\n" >&2
+                    echo "Usage: nav config openers <add|remove|list>" >&2
                     return 1
                     ;;
             esac
@@ -169,16 +169,19 @@ __nav_config() {
             __nav_config_show
             ;;
         *)
-            printf "usage: nav config <opener|openers|show>\n\n"
-            printf "  opener [<cmd|ASK>]       get/set default opener\n"
-            printf "  openers add \"d - c\"      add opener to list\n"
-            printf "  openers remove <n>       remove opener by number\n"
-            printf "  openers list             list configured openers\n"
-            printf "  show                     show full configuration\n"
+            echo "Usage: nav config <opener|openers|show>" >&2
+            echo ""
+            echo "  nav config opener [<cmd|ASK>]       Show or set the default opener"
+            echo "  nav config openers add \"d - c\"      Add opener to ASK list"
+            echo "  nav config openers remove <num>     Remove opener by number"
+            echo "  nav config openers list             List configured openers"
+            echo "  nav config show                     Show full configuration"
             return 1
             ;;
     esac
 }
+
+# ─── ASK mode ─────────────────────────────────────────────────────────────────
 
 __nav_ask_opener() {
     local path="$1"
@@ -186,10 +189,11 @@ __nav_ask_opener() {
     openers=$(__nav_config_get_openers)
 
     if [ -z "$openers" ]; then
-        __nav_err "no openers configured (see: nav config openers add)"
+        echo "Error: No openers configured. Add openers with 'nav config openers add'." >&2
         return 1
     fi
 
+    # Build arrays
     local descs=()
     local cmds=()
     while IFS= read -r line; do
@@ -199,26 +203,27 @@ __nav_ask_opener() {
     done <<< "$openers"
 
     if [ ${#descs[@]} -eq 0 ]; then
-        __nav_err "no openers configured"
+        echo "Error: No openers configured." >&2
         return 1
     fi
 
+    # Display menu
     local i
     for i in "${!descs[@]}"; do
-        printf "  %d. %s\n" "$((i + 1))" "${descs[$i]}"
+        printf "  [%d] %s\n" "$((i + 1))" "${descs[$i]}"
     done
-    printf "  > "
+    printf "  Escolha: "
 
     local choice
     read -r choice
 
     if [ -z "$choice" ] || ! [[ "$choice" =~ ^[0-9]+$ ]]; then
-        __nav_msg "cancelled"
+        echo "Cancelled." >&2
         return 1
     fi
 
     if [ "$choice" -lt 1 ] || [ "$choice" -gt ${#cmds[@]} ]; then
-        __nav_err "invalid choice"
+        echo "Error: Invalid choice." >&2
         return 1
     fi
 
@@ -226,10 +231,13 @@ __nav_ask_opener() {
     __nav_exec_opener "$selected_cmd" "$path"
 }
 
+# ─── Open logic ───────────────────────────────────────────────────────────────
+
 __nav_exec_opener() {
     local cmd="$1"
     local path="$2"
 
+    # Detect environment: if command ends with .exe, convert path for WSL
     if [[ "$cmd" == *.exe ]]; then
         local converted_path
         converted_path=$(wslpath -w "$path" 2>/dev/null || echo "$path")
@@ -243,11 +251,13 @@ __nav_open() {
     local path="$1"
     local override="$2"
 
+    # If explicit override was passed, use it directly
     if [ -n "$override" ]; then
         __nav_exec_opener "$override" "$path"
         return $?
     fi
 
+    # Read from config
     local opener
     opener=$(__nav_config_get_opener)
 
@@ -258,18 +268,11 @@ __nav_open() {
     fi
 }
 
+# ─── Alias management ─────────────────────────────────────────────────────────
+
 __nav_resolve_alias() {
     local alias="$1"
     grep "^${alias}=" "$NAV_ALIASES_FILE" | cut -d'=' -f2-
-}
-
-__nav_is_reserved() {
-    local word="$1"
-    local reserved=(set unset list export import config help)
-    for r in "${reserved[@]}"; do
-        [ "$word" == "$r" ] && return 0
-    done
-    return 1
 }
 
 __nav_set() {
@@ -279,12 +282,7 @@ __nav_set() {
     if [ "$1" == "--alias" ] && [ -n "$2" ]; then
         alias="$2"
     else
-        printf "usage: nav set --alias <name> [--path <dir>]\n" >&2
-        return 1
-    fi
-
-    if __nav_is_reserved "$alias"; then
-        __nav_err "'${alias}' is a reserved word"
+        echo "Usage: nav set --alias <alias_name> [--path <directory_path>]" >&2
         return 1
     fi
 
@@ -293,27 +291,27 @@ __nav_set() {
     elif [ -z "$3" ]; then
         path=$(pwd)
     else
-        printf "usage: nav set --alias <name> [--path <dir>]\n" >&2
+        echo "Usage: nav set --alias <alias_name> [--path <directory_path>]" >&2
         return 1
     fi
 
     if [ ! -d "$path" ]; then
-        __nav_err "path '$path' does not exist or is not a directory"
+        echo "Error: Path '$path' does not exist or is not a directory." >&2
         return 1
     fi
 
     if grep -q "^${alias}=" "$NAV_ALIASES_FILE"; then
         sed -i "s|^${alias}=.*|${alias}=${path}|" "$NAV_ALIASES_FILE"
-        __nav_msg "updated '${alias}' → ${path}"
+        echo "Updated alias '${alias}' to '${path}'."
     else
         echo "${alias}=${path}" >> "$NAV_ALIASES_FILE"
-        __nav_msg "set '${alias}' → ${path}"
+        echo "Set alias '${alias}' to '${path}'."
     fi
 }
 
 __nav_unset() {
     if [ -z "$1" ]; then
-        printf "usage: nav unset <alias>\n" >&2
+        echo "Usage: nav unset <alias_name>" >&2
         return 1
     fi
 
@@ -321,18 +319,19 @@ __nav_unset() {
 
     if grep -q "^${alias}=" "$NAV_ALIASES_FILE"; then
         sed -i "/^${alias}=/d" "$NAV_ALIASES_FILE"
-        __nav_msg "removed '${alias}'"
+        echo "Unset alias '${alias}'."
     else
-        __nav_err "alias '${alias}' not found"
+        echo "Error: Alias '${alias}' not found." >&2
         return 1
     fi
 }
 
 __nav_list() {
     if [ -s "$NAV_ALIASES_FILE" ]; then
+        echo "Defined Aliases:"
         column -t -s '=' "$NAV_ALIASES_FILE"
     else
-        __nav_msg "no aliases defined"
+        echo "No aliases defined yet."
     fi
 }
 
@@ -344,12 +343,13 @@ __nav_export() {
     fi
 
     cp "$NAV_ALIASES_FILE" "$filename"
-    __nav_msg "exported to '$(pwd)/${filename}'"
+    echo "Configuration exported to '$(pwd)/${filename}'."
 }
 
 __nav_import() {
     if [ -z "$1" ] || [ ! -f "$1" ]; then
-        printf "usage: nav import <file>\n" >&2
+        echo "Usage: nav import <path/to/file>" >&2
+        echo "Error: File not found." >&2
         return 1
     fi
 
@@ -372,20 +372,23 @@ __nav_import() {
         fi
     done < "$import_file"
 
-    __nav_msg "imported ${imported_count} aliases"
+    echo "Import complete. ${imported_count} aliases processed."
 }
+
+# ─── Navigation ───────────────────────────────────────────────────────────────
 
 __nav_goto() {
     local alias="$1"
     local path=$(__nav_resolve_alias "$alias")
 
     if [ -z "$path" ]; then
-        __nav_err "alias '${alias}' not found"
+        echo "Error: Alias '${alias}' not found." >&2
+        __nav_help
         return 1
     fi
 
     if [ ! -d "$path" ]; then
-        __nav_err "path for '${alias}' no longer exists: ${path}"
+        echo "Error: The path for '${alias}' ('${path}') no longer exists." >&2
         return 1
     fi
 
@@ -396,36 +399,43 @@ __nav_goto() {
     fi
 }
 
+# ─── Help ─────────────────────────────────────────────────────────────────────
+
 __nav_help() {
-    printf "\n"
-    printf "   ███╗   ██╗  █████╗  ██╗   ██╗\n"
-    printf "   ████╗  ██║ ██╔══██╗ ██║   ██║\n"
-    printf "   ██╔██╗ ██║ ███████║ ██║   ██║\n"
-    printf "   ██║╚██╗██║ ██╔══██║ ╚██╗ ██╔╝\n"
-    printf "   ██║ ╚████║ ██║  ██║  ╚████╔╝ \n"
-    printf "   ╚═╝  ╚═══╝ ╚═╝  ╚═╝   ╚═══╝ \n"
-    printf "\n"
-    printf "  usage: nav <command> [options]\n"
-    printf "\n"
-    printf "  navigation:\n"
-    printf "    nav <alias>                  go to alias path\n"
-    printf "    nav <alias> -o [program]     open alias path with opener\n"
-    printf "\n"
-    printf "  aliases:\n"
-    printf "    set --alias <a> [--path <p>] set alias (default: cwd)\n"
-    printf "    unset <alias>                remove alias\n"
-    printf "    list                         list all aliases\n"
-    printf "    import <file>                import aliases from file\n"
-    printf "    export [--name <file>]       export aliases to file\n"
-    printf "\n"
-    printf "  config:\n"
-    printf "    config show                  show current configuration\n"
-    printf "    config opener [<cmd|ASK>]    get/set default opener\n"
-    printf "    config openers list          list available openers\n"
-    printf "    config openers add \"d - c\"   add opener to list\n"
-    printf "    config openers remove <n>    remove opener by number\n"
-    printf "\n"
+    echo ""
+    echo "   ███╗   ██╗  █████╗  ██╗   ██╗"
+    echo "   ████╗  ██║ ██╔══██╗ ██║   ██║"
+    echo "   ██╔██╗ ██║ ███████║ ██║   ██║"
+    echo "   ██║╚██╗██║ ██╔══██║ ╚██╗ ██╔╝"
+    echo "   ██║ ╚████║ ██║  ██║  ╚████╔╝ "
+    echo "   ╚═╝  ╚═══╝ ╚═╝  ╚═╝   ╚═══╝ "
+    echo ""
+    echo "  nav: A simple navigation manager"
+    echo "  -----------------------------------"
+    echo "  Usage: nav <command> [options]"
+    echo ""
+    echo "  Navigation:"
+    echo "    nav <alias>                     Navigate to the path defined by the alias."
+    echo "    nav <alias> -o [program]        Open alias path with opener (override or config)."
+    echo ""
+    echo "  Alias management:"
+    echo "    nav set --alias a [--path p]    Set or update an alias 'a' to a path 'p'."
+    echo "    nav unset <alias>               Remove an alias."
+    echo "    nav list                        List all defined aliases."
+    echo "    nav import <file>               Import aliases from a text file."
+    echo "    nav export [--name file]        Export aliases to a file."
+    echo ""
+    echo "  Configuration:"
+    echo "    nav config opener [<cmd|ASK>]   Show or set the default opener."
+    echo "    nav config openers list         List configured openers for ASK mode."
+    echo "    nav config openers add \"d - c\"  Add an opener (format: \"desc - command\")."
+    echo "    nav config openers remove <n>   Remove an opener by number."
+    echo "    nav config show                 Show full configuration."
+    echo ""
+    echo "    nav help                        Show this help message."
 }
+
+# ─── Entry point ──────────────────────────────────────────────────────────────
 
 nav() {
     __nav_ensure_aliases
