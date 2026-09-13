@@ -43,7 +43,6 @@ get_installed_version() {
 }
 
 show_header() {
-    clear
     echo -e "${C_BOLD}${C_CYAN}"
     local ver_text="v$VERSION"
     local pad=$(( (37 - ${#ver_text}) / 2 ))
@@ -182,16 +181,22 @@ get_status_badge() {
 }
 
 render_ui() {
-    show_header
+    # Build the whole frame in memory and paint it in one shot, repositioning
+    # the cursor instead of calling `clear`. A full `clear` wipes the terminal
+    # buffer on every keystroke, which reads as flicker/lag, especially over
+    # SSH or WSL's console; cursor-home + erase-to-end avoids that blank flash
+    # and a single write is smoother than ~20 separate echo calls per frame.
+    local frame=""
+    frame+="$(show_header)"$'\n'
 
     local sel_count=0
     for i in "${!selected[@]}"; do
         [ "${selected[$i]}" -eq 1 ] && sel_count=$((sel_count + 1))
     done
 
-    echo -e "  ${C_GRAY}${#NAMES[@]} extensions │ ${C_GREEN}${INSTALLED_COUNT} installed${C_RESET} ${C_GRAY}│${C_RESET} ${C_YELLOW}${NEW_COUNT} new${C_RESET} ${C_GRAY}│${C_RESET} ${C_MAGENTA}${UPDATE_COUNT} updates${C_RESET} ${C_GRAY}│ ${sel_count} selected${C_RESET}"
-    echo -e "  ${C_GRAY}────────────────────────────────────────────────────────────${C_RESET}"
-    echo ""
+    frame+="  ${C_GRAY}${#NAMES[@]} extensions │ ${C_GREEN}${INSTALLED_COUNT} installed${C_RESET} ${C_GRAY}│${C_RESET} ${C_YELLOW}${NEW_COUNT} new${C_RESET} ${C_GRAY}│${C_RESET} ${C_MAGENTA}${UPDATE_COUNT} updates${C_RESET} ${C_GRAY}│ ${sel_count} selected${C_RESET}"$'\n'
+    frame+="  ${C_GRAY}────────────────────────────────────────────────────────────${C_RESET}"$'\n'
+    frame+=$'\n'
 
     for i in "${!NAMES[@]}"; do
         local badge=$(get_status_badge "${STATUS[$i]}")
@@ -210,19 +215,23 @@ render_ui() {
         local desc=" ${C_GRAY}─ ${DESCRIPTIONS[$i]}${C_RESET}"
 
         if [ "$i" -eq "$cursor" ]; then
-            echo -e "  ${C_REVERSE} ${badge} ${check}${NAMES[$i]}${ver_display} ${C_RESET}${desc}"
+            frame+="  ${C_REVERSE} ${badge} ${check}${NAMES[$i]}${ver_display} ${C_RESET}${desc}"$'\n'
 
             if [ "$help_active" = true ]; then
-                echo -e "     ${C_GRAY}└─ ${C_CYAN}${GITHUB_BROWSE}/${NAMES[$i]}/README.md${C_RESET}"
+                frame+="     ${C_GRAY}└─ ${C_CYAN}${GITHUB_BROWSE}/${NAMES[$i]}/README.md${C_RESET}"$'\n'
             fi
         else
-            echo -e "   ${badge} ${check}${NAMES[$i]}${ver_display}${desc}"
+            frame+="   ${badge} ${check}${NAMES[$i]}${ver_display}${desc}"$'\n'
         fi
     done
 
-    echo ""
-    echo -e "  ${C_GRAY}[↑↓] Navigate  [Space] Toggle  [a] All  [n] None  [i] Smart${C_RESET}"
-    echo -e "  ${C_GRAY}[h] Docs  [Enter] Install  [q] Quit${C_RESET}"
+    frame+=$'\n'
+    frame+="  ${C_GRAY}[↑↓] Navigate  [Space] Toggle  [a] All  [n] None  [i] Smart${C_RESET}"$'\n'
+    frame+="  ${C_GRAY}[h] Docs  [Enter] Install  [q] Quit${C_RESET}"
+
+    tput cup 0 0 2>/dev/null
+    tput ed 2>/dev/null
+    echo -e "$frame"
 }
 
 handle_input() {
@@ -410,6 +419,7 @@ execute_tasks() {
 # --- Modes ---
 
 mode_update() {
+    clear
     show_header
     echo -e "  ${C_BOLD}Updating all installed extensions...${C_RESET}"
     echo ""
@@ -600,6 +610,7 @@ main() {
             ;;
     esac
 
+    clear
     show_header
     fetch_registry
     parse_registry

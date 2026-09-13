@@ -2,6 +2,10 @@
   "project_name": "Dotfiles",
   "icon": "terminal",
   "commands": [
+    { "name": "Ver README.md", "folder": "Sobre", "type": "shell",
+      "command": "cat README.md",
+      "working_dir": "{{PROJECT_PATH}}" },
+
     { "name": "Instalar extensions (todas)", "folder": "Instalar", "type": "shell",
       "command": "for f in extensions/*/install; do echo \"==> $f\"; bash \"$f\"; done",
       "working_dir": "{{PROJECT_PATH}}" },
@@ -12,7 +16,7 @@
         { "name": "EXTENSION", "label": "Nome da extension (ctx, pr, marry, quiver, sync, shh, ...)", "type": "text", "default": "" }
       ] },
     { "name": "Instalar nav (reinstala no ~/.bashrc)", "folder": "Instalar", "type": "shell",
-      "command": "sed -i '\\|bashrc/nav|d' ~/.bashrc; echo 'source \"{{PROJECT_PATH}}/bashrc/nav\"' >> ~/.bashrc; echo 'nav reinstalado em ~/.bashrc. Abra um novo terminal (ou rode: source ~/.bashrc).'",
+      "command": "sed -i '\\|bashrc/nav|d' ~/.bashrc; echo 'source \"{{PROJECT_PATH}}/bashrc/nav\"' >> ~/.bashrc; echo 'nav reinstalado em ~/.bashrc (inclui autocomplete). Abra um novo terminal (ou rode: source ~/.bashrc).'",
       "working_dir": "{{PROJECT_PATH}}" },
 
     { "name": "nav — listar aliases de pasta", "folder": "Nav", "type": "shell",
