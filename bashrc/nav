@@ -4,6 +4,9 @@
 
 NAV_ALIASES_FILE="$HOME/.navm_aliases"
 NAV_CONFIG_FILE="$HOME/.navm_config"
+NAV_USAGE_FILE="$HOME/.navm_usage"
+NAV_FRECENT_FILE="$HOME/.navm_frecent"
+NAV_FRECENT_MAX=500
 
 # ─── Config helpers ───────────────────────────────────────────────────────────
 
@@ -15,6 +18,40 @@ __nav_ensure_config() {
     if [ ! -f "$NAV_CONFIG_FILE" ]; then
         printf "opener=explorer.exe\n[openers]\n" > "$NAV_CONFIG_FILE"
     fi
+}
+
+__nav_ensure_usage() {
+    touch "$NAV_USAGE_FILE"
+}
+
+__nav_ensure_frecent() {
+    touch "$NAV_FRECENT_FILE"
+}
+
+__nav_config_get_page_size() {
+    local n
+    n=$(grep "^page_size=" "$NAV_CONFIG_FILE" 2>/dev/null | cut -d'=' -f2-)
+    if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ]; then
+        echo "$n"
+    else
+        echo 10
+    fi
+}
+
+__nav_config_set_page_size() {
+    local value="$1"
+
+    if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "$value" -lt 1 ]; then
+        echo "Error: page size must be a positive integer." >&2
+        return 1
+    fi
+
+    if grep -q "^page_size=" "$NAV_CONFIG_FILE" 2>/dev/null; then
+        sed -i "s|^page_size=.*|page_size=${value}|" "$NAV_CONFIG_FILE"
+    else
+        sed -i "1i page_size=${value}" "$NAV_CONFIG_FILE"
+    fi
+    echo "Page size set to '${value}'."
 }
 
 __nav_config_get_opener() {
@@ -120,10 +157,39 @@ __nav_config_openers_remove() {
     echo "Removed: ${target_line}"
 }
 
+__nav_config_get_track() {
+    local v
+    v=$(grep "^track=" "$NAV_CONFIG_FILE" 2>/dev/null | cut -d'=' -f2-)
+    case "$v" in
+        off) echo "off" ;;
+        *)   echo "on" ;;
+    esac
+}
+
+__nav_config_set_track() {
+    local value="$1"
+    case "$value" in
+        on|off) ;;
+        *)
+            echo "Error: track must be 'on' or 'off'." >&2
+            return 1
+            ;;
+    esac
+
+    if grep -q "^track=" "$NAV_CONFIG_FILE" 2>/dev/null; then
+        sed -i "s|^track=.*|track=${value}|" "$NAV_CONFIG_FILE"
+    else
+        sed -i "1i track=${value}" "$NAV_CONFIG_FILE"
+    fi
+    echo "Directory tracking set to '${value}'."
+}
+
 __nav_config_show() {
     echo "─── NAV Configuration ───"
     echo ""
     echo "  Opener: $(__nav_config_get_opener)"
+    echo "  Interactive page size: $(__nav_config_get_page_size)"
+    echo "  Directory tracking (nav f): $(__nav_config_get_track)"
     echo ""
 
     local openers
@@ -165,20 +231,201 @@ __nav_config() {
                     ;;
             esac
             ;;
+        page_size)
+            if [ -z "$2" ]; then
+                echo "Current page size: $(__nav_config_get_page_size)"
+            else
+                __nav_config_set_page_size "$2"
+            fi
+            ;;
+        track)
+            if [ -z "$2" ]; then
+                echo "Current tracking: $(__nav_config_get_track)"
+            else
+                __nav_config_set_track "$2"
+            fi
+            ;;
         show)
             __nav_config_show
             ;;
         *)
-            echo "Usage: nav config <opener|openers|show>" >&2
+            echo "Usage: nav config <opener|openers|page_size|track|show>" >&2
             echo ""
             echo "  nav config opener [<cmd|ASK>]       Show or set the default opener"
             echo "  nav config openers add \"d - c\"      Add opener to ASK list"
             echo "  nav config openers remove <num>     Remove opener by number"
             echo "  nav config openers list             List configured openers"
+            echo "  nav config page_size [<n>]          Show or set interactive mode page size"
+            echo "  nav config track [<on|off>]         Show or set directory auto-tracking (nav f)"
             echo "  nav config show                     Show full configuration"
             return 1
             ;;
     esac
+}
+
+# ─── Usage tracking (alias frecency) ───────────────────────────────────────────
+#
+# Every successful `cd`/open/exec against an *alias* bumps a counter and
+# timestamp in ~/.navm_usage (format: alias=count:epoch). Interactive mode
+# uses this to rank aliases by "frecency" (frequency, recency as tiebreak)
+# instead of raw file order. `-p`/print is intentionally NOT tracked here —
+# it's meant for scripting/lookups, not "visiting" a place.
+
+__nav_track_usage() {
+    local alias="$1"
+    [ -z "$alias" ] && return
+    __nav_ensure_usage
+
+    local now count
+    now=$(date +%s)
+    count=$(grep "^${alias}=" "$NAV_USAGE_FILE" 2>/dev/null | cut -d'=' -f2- | cut -d':' -f1)
+
+    if [ -n "$count" ]; then
+        count=$((count + 1))
+        sed -i "s|^${alias}=.*|${alias}=${count}:${now}|" "$NAV_USAGE_FILE"
+    else
+        echo "${alias}=1:${now}" >> "$NAV_USAGE_FILE"
+    fi
+}
+
+__nav_usage_get() {
+    # Echoes "count:epoch" for the given alias, or "0:0" if never used.
+    local alias="$1" line
+    line=$(grep "^${alias}=" "$NAV_USAGE_FILE" 2>/dev/null | cut -d'=' -f2-)
+    echo "${line:-0:0}"
+}
+
+__nav_usage_cmd() {
+    __nav_ensure_usage
+    case "$1" in
+        show|"")
+            if [ -s "$NAV_USAGE_FILE" ]; then
+                echo "Alias usage stats:"
+                local alias rest count epoch when
+                while IFS='=' read -r alias rest; do
+                    [ -z "$alias" ] && continue
+                    count="${rest%%:*}"
+                    epoch="${rest##*:}"
+                    when=$(date -d "@${epoch}" '+%Y-%m-%d %H:%M' 2>/dev/null)
+                    [ -z "$when" ] && when="-"
+                    printf '%s\t%s uses\tlast: %s\n' "$alias" "$count" "$when"
+                done < "$NAV_USAGE_FILE" | column -t -s $'\t'
+            else
+                echo "No usage data yet."
+            fi
+            ;;
+        clear)
+            : > "$NAV_USAGE_FILE"
+            echo "Usage stats cleared."
+            ;;
+        *)
+            echo "Usage: nav usage <show|clear>" >&2
+            return 1
+            ;;
+    esac
+}
+
+# ─── Directory learning (auto-tracked paths, "nav f") ──────────────────────────
+#
+# Separate from alias usage: ~/.navm_frecent (format: count<TAB>epoch<TAB>path)
+# records every directory actually `cd`'d into via the `cd` hook below —
+# whether you got there through a nav alias, `nav f` itself, or a plain `cd`
+# typed by hand. `nav f`/`frequent` picks from this history directly, no
+# `nav set` required — it's the "learns the paths for you" mode. Opening a
+# path (`-o`) also counts as a visit; printing (`-p`) does not. $HOME and `/`
+# are skipped as too generic to be useful here. The file is capped at
+# $NAV_FRECENT_MAX lines (keeping the highest-scoring ones) so it can't grow
+# unbounded from years of `cd` calls.
+
+__nav_track_path() {
+    local path="$1"
+    [ -z "$path" ] && return
+    [ "$path" = "$HOME" ] && return
+    [ "$path" = "/" ] && return
+    __nav_ensure_frecent
+
+    local now tmp
+    now=$(date +%s)
+    tmp=$(mktemp "${NAV_FRECENT_FILE}.XXXXXX" 2>/dev/null) || return
+
+    local found=0 cnt epoch p
+    while IFS=$'\t' read -r cnt epoch p || [ -n "$p" ]; do
+        [ -z "$p" ] && continue
+        if [ "$p" = "$path" ]; then
+            cnt=$((cnt + 1))
+            epoch="$now"
+            found=1
+        fi
+        printf '%s\t%s\t%s\n' "$cnt" "$epoch" "$p"
+    done < "$NAV_FRECENT_FILE" > "$tmp"
+
+    [ "$found" -eq 0 ] && printf '1\t%s\t%s\n' "$now" "$path" >> "$tmp"
+
+    if [ "$(wc -l < "$tmp" 2>/dev/null || echo 0)" -gt "$NAV_FRECENT_MAX" ]; then
+        sort -t $'\t' -k1,1nr -k2,2nr "$tmp" | head -n "$NAV_FRECENT_MAX" > "${tmp}.capped" \
+            && mv "${tmp}.capped" "$tmp"
+    fi
+
+    mv "$tmp" "$NAV_FRECENT_FILE"
+}
+
+__nav_untrack_path() {
+    local path="$1"
+    [ -z "$path" ] && return
+    __nav_ensure_frecent
+
+    local tmp
+    tmp=$(mktemp "${NAV_FRECENT_FILE}.XXXXXX" 2>/dev/null) || return
+
+    local cnt epoch p
+    while IFS=$'\t' read -r cnt epoch p || [ -n "$p" ]; do
+        [ -z "$p" ] && continue
+        [ "$p" = "$path" ] && continue
+        printf '%s\t%s\t%s\n' "$cnt" "$epoch" "$p"
+    done < "$NAV_FRECENT_FILE" > "$tmp"
+
+    mv "$tmp" "$NAV_FRECENT_FILE"
+}
+
+__nav_learned_cmd() {
+    __nav_ensure_frecent
+    case "$1" in
+        show|"")
+            if [ -s "$NAV_FRECENT_FILE" ]; then
+                echo "Learned paths (auto-tracked via cd):"
+                local cnt epoch p when disp
+                while IFS=$'\t' read -r cnt epoch p; do
+                    [ -z "$p" ] && continue
+                    when=$(date -d "@${epoch}" '+%Y-%m-%d %H:%M' 2>/dev/null)
+                    [ -z "$when" ] && when="-"
+                    disp=$(__nav_display_path "$p")
+                    printf '%s\t%s visits\tlast: %s\n' "$disp" "$cnt" "$when"
+                done < <(sort -t $'\t' -k1,1nr -k2,2nr "$NAV_FRECENT_FILE") | column -t -s $'\t'
+            else
+                echo "No learned paths yet."
+            fi
+            ;;
+        clear)
+            : > "$NAV_FRECENT_FILE"
+            echo "Learned paths cleared."
+            ;;
+        *)
+            echo "Usage: nav learned <show|clear>" >&2
+            return 1
+            ;;
+    esac
+}
+
+# ─── Display helpers ────────────────────────────────────────────────────────────
+
+__nav_display_path() {
+    # Shortens $HOME to ~ for display only — stored/resolved paths stay absolute.
+    local p="$1"
+    if [ -n "$HOME" ] && [[ "$p" == "$HOME"* ]]; then
+        printf '~%s' "${p#"$HOME"}"
+    else
+        printf '%s' "$p"
+    fi
 }
 
 # ─── ASK mode ─────────────────────────────────────────────────────────────────
@@ -282,28 +529,62 @@ __nav_resolve_alias() {
 }
 
 __nav_set() {
-    local alias=""
-    local path=""
+    local alias="" path="" have_path=0
 
-    if [ "$1" == "--alias" ] && [ -n "$2" ]; then
-        alias="$2"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --alias)
+                alias="$2"
+                shift 2
+                ;;
+            --path)
+                path="$2"
+                have_path=1
+                shift 2
+                ;;
+            *)
+                echo "Usage: nav set [--alias <alias_name>] [--path <directory_path>]" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    if [ "$have_path" -eq 1 ]; then
+        if [ -z "$path" ]; then
+            echo "Usage: nav set [--alias <alias_name>] [--path <directory_path>]" >&2
+            return 1
+        fi
+        path=$(realpath "$path" 2>/dev/null)
     else
-        echo "Usage: nav set --alias <alias_name> [--path <directory_path>]" >&2
-        return 1
-    fi
-
-    if [ "$3" == "--path" ] && [ -n "$4" ]; then
-        path=$(realpath "$4")
-    elif [ -z "$3" ]; then
         path=$(pwd)
-    else
-        echo "Usage: nav set --alias <alias_name> [--path <directory_path>]" >&2
-        return 1
     fi
 
-    if [ ! -d "$path" ]; then
+    if [ -z "$path" ] || [ ! -d "$path" ]; then
         echo "Error: Path '$path' does not exist or is not a directory." >&2
         return 1
+    fi
+
+    # No --alias given: derive one from the folder name (kept backward
+    # compatible — `--alias` still works exactly as before, this only fills
+    # in when it's omitted). Collides with a *different* existing path get a
+    # numeric suffix instead of silently overwriting it.
+    if [ -z "$alias" ]; then
+        local base
+        base=$(basename "$path")
+        alias=$(printf '%s' "$base" | tr -c 'A-Za-z0-9_.-' '-')
+        [ -z "$alias" ] && alias="dir"
+
+        if grep -q "^${alias}=" "$NAV_ALIASES_FILE" 2>/dev/null; then
+            local existing
+            existing=$(__nav_resolve_alias "$alias")
+            if [ "$existing" != "$path" ]; then
+                local n=2
+                while grep -q "^${alias}${n}=" "$NAV_ALIASES_FILE" 2>/dev/null; do
+                    n=$((n + 1))
+                done
+                alias="${alias}${n}"
+            fi
+        fi
     fi
 
     if grep -q "^${alias}=" "$NAV_ALIASES_FILE"; then
@@ -325,6 +606,7 @@ __nav_unset() {
 
     if grep -q "^${alias}=" "$NAV_ALIASES_FILE"; then
         sed -i "/^${alias}=/d" "$NAV_ALIASES_FILE"
+        sed -i "/^${alias}=/d" "$NAV_USAGE_FILE" 2>/dev/null
         echo "Unset alias '${alias}'."
     else
         echo "Error: Alias '${alias}' not found." >&2
@@ -335,10 +617,63 @@ __nav_unset() {
 __nav_list() {
     if [ -s "$NAV_ALIASES_FILE" ]; then
         echo "Defined Aliases:"
-        column -t -s '=' "$NAV_ALIASES_FILE"
+        local alias path disp suffix
+        while IFS='=' read -r alias path; do
+            [ -z "$alias" ] && continue
+            disp=$(__nav_display_path "$path")
+            suffix=""
+            [ ! -d "$path" ] && suffix="  [missing]"
+            printf '%s=%s%s\n' "$alias" "$disp" "$suffix"
+        done < "$NAV_ALIASES_FILE" | column -t -s '='
     else
         echo "No aliases defined yet."
     fi
+}
+
+__nav_prune() {
+    __nav_ensure_aliases
+
+    local yes=0
+    case "$1" in
+        -y|--yes) yes=1 ;;
+    esac
+
+    local broken=() alias path
+    while IFS='=' read -r alias path; do
+        [ -z "$alias" ] && continue
+        [ ! -d "$path" ] && broken+=("${alias}=${path}")
+    done < "$NAV_ALIASES_FILE"
+
+    if [ ${#broken[@]} -eq 0 ]; then
+        echo "No broken aliases found."
+        return 0
+    fi
+
+    echo "Broken aliases (path no longer exists):"
+    local b
+    for b in "${broken[@]}"; do
+        echo "  ${b%%=*} -> ${b#*=}"
+    done
+
+    if [ "$yes" -ne 1 ]; then
+        printf "Remove %d broken alias(es)? [y/N] " "${#broken[@]}"
+        local ans=""
+        read -r ans
+        case "$ans" in
+            y|Y|yes|YES) ;;
+            *)
+                echo "Cancelled." >&2
+                return 1
+                ;;
+        esac
+    fi
+
+    for b in "${broken[@]}"; do
+        local a="${b%%=*}"
+        sed -i "/^${a}=/d" "$NAV_ALIASES_FILE"
+        sed -i "/^${a}=/d" "$NAV_USAGE_FILE" 2>/dev/null
+    done
+    echo "Removed ${#broken[@]} broken alias(es)."
 }
 
 __nav_export() {
@@ -381,11 +716,445 @@ __nav_import() {
     echo "Import complete. ${imported_count} aliases processed."
 }
 
+# ─── Interactive mode ──────────────────────────────────────────────────────────
+#
+# Fuzzy-picker-style UI for selecting a path without remembering its name.
+# Navigate with the arrow keys or vim's j/k (h/l for paging), type to filter,
+# Enter to act on the selection (cd / open / print, depending on how it was
+# launched), Ctrl-D to delete the highlighted entry, Esc/Ctrl-C to quit.
+#
+# j/k/h/l double as both navigation and letters, so they're only treated as
+# navigation while `editing` is 0 (search box empty and untouched). Typing
+# any other character flips `editing` to 1, after which j/k/h/l are typed
+# literally into the search box instead — so searching for "jira" or "logs"
+# still works, it just takes one extra keystroke to "arm" the box. Press
+# `/` (vim-style) to arm it explicitly without typing a character, for when
+# the very first letter you want to search happens to be j/k/h/l. Arrow
+# keys always navigate, in every state, since they never collide with typed
+# text. Backspacing the query back to empty disarms `editing` again.
+#
+# Search matches the full "label=path" line as a plain substring, and also
+# matches the label alone with fuzzy (out-of-order) matching — so typing
+# "agw" finds "api-gateway" even though it's not a literal substring. Fuzzy
+# matching is deliberately scoped to the (short) label only: doing it
+# against full paths too would match almost anything and defeat the point
+# of filtering.
+#
+# What populates the list depends on $source_mode:
+#   smart   - your defined aliases (nav set), pre-sorted by frecency. With
+#             an empty search box it shows only the ones you've actually
+#             used (so the common case is a short, relevant list); the
+#             moment you type anything it searches *all* of them, so a
+#             brand-new alias you haven't visited yet is never truly
+#             hidden. This is what bare `nav`/`-o`/`-p`/`o`/`p` use.
+#   all     - same alias data, but always shows everything, used or not.
+#             This is what `nav i`/`interactive` uses.
+#   learned - not aliases at all: the auto-tracked `cd` history from
+#             ~/.navm_frecent (see the "Directory learning" section above).
+#             This is what `nav f`/`frequent` uses — it "learns" paths you
+#             actually visit, no `nav set` required.
+#
+# The functions below share state (entries/used_entries/filtered/query/sel/
+# editing/page_size/action/open_override/source_mode/status_msg) through
+# bash's dynamic scoping: they're only ever called while those `local`
+# variables are in scope inside __nav_interactive.
+
+__nav_ia_fuzzy() {
+    # Subsequence match: every char of $2 appears in $1, in order.
+    local hay="$1" needle="$2"
+    local hi=0 ni=0 hlen=${#hay} nlen=${#needle}
+    while [ "$hi" -lt "$hlen" ] && [ "$ni" -lt "$nlen" ]; do
+        [ "${hay:$hi:1}" = "${needle:$ni:1}" ] && ni=$((ni + 1))
+        hi=$((hi + 1))
+    done
+    [ "$ni" -eq "$nlen" ]
+}
+
+__nav_ia_filter() {
+    local base=()
+    if [ -z "$query" ] && [ ${#used_entries[@]} -gt 0 ]; then
+        base=("${used_entries[@]}")
+    else
+        base=("${entries[@]}")
+    fi
+
+    filtered=()
+    if [ -z "$query" ]; then
+        filtered=("${base[@]}")
+    else
+        local q="${query,,}" e le label label_lc
+        for e in "${base[@]}"; do
+            le="${e,,}"
+            label="${e%%=*}"
+            label_lc="${label,,}"
+            if [[ "$le" == *"$q"* ]] || __nav_ia_fuzzy "$label_lc" "$q"; then
+                filtered+=("$e")
+            fi
+        done
+    fi
+
+    local count=${#filtered[@]}
+    if [ "$count" -eq 0 ]; then
+        sel=0
+    elif [ "$sel" -ge "$count" ]; then
+        sel=$((count - 1))
+    fi
+}
+
+__nav_ia_move() {
+    local count=${#filtered[@]}
+    [ "$count" -eq 0 ] && return
+    sel=$((sel + $1))
+    if [ "$sel" -lt 0 ]; then
+        sel=$((count - 1))
+    elif [ "$sel" -ge "$count" ]; then
+        sel=0
+    fi
+}
+
+__nav_ia_page() {
+    local count=${#filtered[@]}
+    [ "$count" -eq 0 ] && return
+    sel=$((sel + $1 * page_size))
+    if [ "$sel" -lt 0 ]; then
+        sel=0
+    elif [ "$sel" -gt $((count - 1)) ]; then
+        sel=$((count - 1))
+    fi
+}
+
+__nav_ia_delete_selected() {
+    [ ${#filtered[@]} -eq 0 ] && return
+
+    local sel_entry="${filtered[$sel]}"
+    local sel_label="${sel_entry%%=*}"
+    local sel_path="${sel_entry#*=}"
+
+    if [ "$source_mode" = "learned" ]; then
+        __nav_untrack_path "$sel_path"
+        status_msg="Removed learned path '$(__nav_display_path "$sel_path")'."
+    else
+        sed -i "/^${sel_label}=/d" "$NAV_ALIASES_FILE" 2>/dev/null
+        sed -i "/^${sel_label}=/d" "$NAV_USAGE_FILE" 2>/dev/null
+        status_msg="Deleted alias '${sel_label}'."
+    fi
+
+    local kept=() e
+    for e in "${entries[@]}"; do
+        [ "${e#*=}" != "$sel_path" ] && kept+=("$e")
+    done
+    entries=("${kept[@]}")
+
+    kept=()
+    for e in "${used_entries[@]}"; do
+        [ "${e#*=}" != "$sel_path" ] && kept+=("$e")
+    done
+    used_entries=("${kept[@]}")
+
+    __nav_ia_filter
+    __nav_ia_render
+    sleep 0.6
+    status_msg=""
+}
+
+__nav_ia_render() {
+    local count=${#filtered[@]}
+    local cols
+    cols=$(tput cols 2>/dev/null)
+    cols=${cols:-80}
+
+    local total_pages=$(( (count + page_size - 1) / page_size ))
+    [ "$total_pages" -lt 1 ] && total_pages=1
+
+    local page=0
+    [ "$page_size" -gt 0 ] && page=$((sel / page_size))
+
+    local start=$((page * page_size))
+    local end=$((start + page_size - 1))
+    [ "$end" -gt $((count - 1)) ] && end=$((count - 1))
+
+    local showing_subset=0
+    [ -z "$query" ] && [ ${#used_entries[@]} -gt 0 ] && [ ${#used_entries[@]} -lt ${#entries[@]} ] && showing_subset=1
+
+    local hint="(type to search, / to force)"
+    if [ "$editing" = 1 ]; then
+        hint="(editing — j/k/h/l typed literally)"
+    elif [ "$showing_subset" = 1 ]; then
+        hint="(most used — type to search everything)"
+    fi
+
+    local mode_label="interactive"
+    case "$source_mode" in
+        all)     mode_label="interactive (all)" ;;
+        learned) mode_label="frequent (auto-tracked)" ;;
+    esac
+    local enter_label="select"
+    case "$action" in
+        open)  mode_label="${mode_label} — open mode";  enter_label="open" ;;
+        print) mode_label="${mode_label} — print mode"; enter_label="print" ;;
+    esac
+
+    printf '\033[H\033[J'
+    printf '  \033[1mnav\033[0m \033[2m— %s (%d total, %d shown)\033[0m\n\n' "$mode_label" "${#entries[@]}" "$count"
+    printf '  Search: %s\033[7m \033[0m  \033[2m%s\033[0m\n' "$query" "$hint"
+    [ -n "$status_msg" ] && printf '  \033[33m%s\033[0m\n' "$status_msg"
+    printf '\n'
+
+    if [ "$count" -eq 0 ]; then
+        printf '    No matches.\n'
+    else
+        local i entry label epath disp line missing maxw=$((cols - 8))
+        [ "$maxw" -lt 10 ] && maxw=10
+        for (( i = start; i <= end; i++ )); do
+            entry="${filtered[$i]}"
+            label="${entry%%=*}"
+            epath="${entry#*=}"
+            disp=$(__nav_display_path "$epath")
+            missing=0
+            [ ! -d "$epath" ] && missing=1
+
+            line=$(printf '%-16s %s' "$label" "$disp")
+            [ "$missing" = 1 ] && line="${line}  [missing]"
+            if [ "${#line}" -gt "$maxw" ]; then
+                line="${line:0:$((maxw - 1))}…"
+            fi
+
+            if [ "$i" -eq "$sel" ]; then
+                printf '  \033[7m› %s\033[0m\n' "$line"
+            elif [ "$missing" = 1 ]; then
+                printf '    \033[31m%s\033[0m\n' "$line"
+            else
+                printf '    %s\n' "$line"
+            fi
+        done
+    fi
+
+    printf '\n  Page %d/%d   \033[2m↑/↓ move · ←/→ page · Enter %s · Ctrl-D delete · Esc/Ctrl-C quit\033[0m\n' "$((page + 1))" "$total_pages" "$enter_label"
+}
+
+__nav_interactive() {
+    # $1: action on Enter — "cd" (default), "open", or "print".
+    # $2: opener override, only used when $1 is "open" (same as `nav <alias> -o [program]`).
+    # $3: source_mode — "smart" (default), "all", or "learned". See the
+    #     block comment above this section for what each one shows.
+    local action="${1:-cd}" open_override="$2" source_mode="${3:-smart}"
+
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        echo "Error: interactive mode requires a terminal." >&2
+        return 1
+    fi
+
+    __nav_ensure_aliases
+    __nav_ensure_config
+    __nav_ensure_usage
+    __nav_ensure_frecent
+
+    local entries=() used_entries=()
+
+    if [ "$source_mode" = "learned" ]; then
+        local sort_input="" cnt epoch p
+        while IFS=$'\t' read -r cnt epoch p; do
+            [ -z "$p" ] && continue
+            sort_input+="${cnt}"$'\t'"${epoch}"$'\t'"${p}"$'\n'
+        done < "$NAV_FRECENT_FILE"
+
+        local sorted=()
+        while IFS=$'\t' read -r cnt epoch p; do
+            [ -z "$p" ] && continue
+            sorted+=("$(basename "$p")=$p")
+        done < <(printf '%s' "$sort_input" | sort -t $'\t' -k1,1nr -k2,2nr)
+
+        entries=("${sorted[@]}")
+        used_entries=("${entries[@]}")
+
+        if [ ${#entries[@]} -eq 0 ]; then
+            echo "No learned paths yet (directory tracking is '$(__nav_config_get_track)')."
+            echo "Just keep using 'cd' — nav learns as you go. Toggle with 'nav config track <on|off>'."
+            return 0
+        fi
+    else
+        local raw=()
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            raw+=("$line")
+        done < "$NAV_ALIASES_FILE"
+
+        if [ ${#raw[@]} -eq 0 ]; then
+            echo "No aliases defined yet. Use 'nav set [--alias <name>]' to create one."
+            return 0
+        fi
+
+        # Sort by frecency (usage count desc, then last-used desc).
+        local sort_input="" e a cnt epoch up
+        for e in "${raw[@]}"; do
+            a="${e%%=*}"
+            up=$(__nav_usage_get "$a")
+            cnt="${up%%:*}"
+            epoch="${up##*:}"
+            sort_input+="${cnt}"$'\t'"${epoch}"$'\t'"${e}"$'\n'
+        done
+
+        local sorted=() used=()
+        while IFS=$'\t' read -r cnt epoch e; do
+            [ -z "$e" ] && continue
+            sorted+=("$e")
+            [ "$cnt" -gt 0 ] && used+=("$e")
+        done < <(printf '%s' "$sort_input" | sort -t $'\t' -k1,1nr -k2,2nr)
+
+        entries=("${sorted[@]}")
+        # "all" mode never restricts to the used-only subset; "smart" does,
+        # via __nav_ia_filter (which itself falls back to the full list
+        # whenever used_entries is empty — e.g. brand new setup).
+        if [ "$source_mode" = "all" ]; then
+            used_entries=("${entries[@]}")
+        else
+            used_entries=("${used[@]}")
+        fi
+    fi
+
+    local page_size
+    page_size=$(__nav_config_get_page_size)
+
+    local query="" sel=0 editing=0 status_msg=""
+    local filtered=()
+    __nav_ia_filter
+
+    local old_stty=""
+    old_stty=$(stty -g 2>/dev/null)
+
+    __nav_ia_cleanup() {
+        [ -n "$old_stty" ] && stty "$old_stty" 2>/dev/null
+        tput cnorm 2>/dev/null
+        printf '\033[H\033[J'
+    }
+
+    trap '__nav_ia_cleanup; trap - RETURN INT' RETURN INT
+    stty -echo -icanon min 1 time 0 2>/dev/null
+    tput civis 2>/dev/null
+
+    local result_path="" result_label=""
+    while true; do
+        __nav_ia_render
+
+        local key="" k2="" k3=""
+        IFS= read -rsn1 key || break
+
+        if [ "$key" = $'\x1b' ]; then
+            IFS= read -rsn1 -t 0.05 k2
+            if [ "$k2" = '[' ]; then
+                IFS= read -rsn1 -t 0.05 k3
+                case "$k3" in
+                    A) __nav_ia_move -1 ;;
+                    B) __nav_ia_move 1 ;;
+                    D) __nav_ia_page -1 ;;
+                    C) __nav_ia_page 1 ;;
+                esac
+            elif [ -n "$query" ]; then
+                query=""
+                editing=0
+                __nav_ia_filter
+            else
+                break
+            fi
+        elif [ -z "$key" ]; then
+            # Enter
+            if [ ${#filtered[@]} -gt 0 ]; then
+                result_label="${filtered[$sel]%%=*}"
+                result_path="${filtered[$sel]#*=}"
+            fi
+            break
+        elif [ "$key" = $'\x7f' ] || [ "$key" = $'\x08' ]; then
+            if [ -n "$query" ]; then
+                query="${query%?}"
+                [ -z "$query" ] && editing=0
+                __nav_ia_filter
+            fi
+        elif [ "$key" = $'\x03' ]; then
+            break
+        elif [ "$key" = $'\x04' ]; then
+            __nav_ia_delete_selected
+            [ ${#entries[@]} -eq 0 ] && break
+        elif [ "$key" = '/' ] && [ "$editing" = 0 ]; then
+            # Explicit "start typing" — arms the search box without
+            # inserting a character, for terms starting with j/k/h/l.
+            editing=1
+        else
+            case "$key" in
+                j) if [ "$editing" = 0 ]; then __nav_ia_move 1; else query+="$key"; __nav_ia_filter; fi ;;
+                k) if [ "$editing" = 0 ]; then __nav_ia_move -1; else query+="$key"; __nav_ia_filter; fi ;;
+                h) if [ "$editing" = 0 ]; then __nav_ia_page -1; else query+="$key"; __nav_ia_filter; fi ;;
+                l) if [ "$editing" = 0 ]; then __nav_ia_page 1; else query+="$key"; __nav_ia_filter; fi ;;
+                *) editing=1; query+="$key"; __nav_ia_filter ;;
+            esac
+        fi
+    done
+
+    __nav_ia_cleanup
+    trap - RETURN INT 2>/dev/null
+
+    if [ -n "$result_path" ]; then
+        if [ -d "$result_path" ]; then
+            case "$action" in
+                open)
+                    __nav_open "$result_path" "$open_override"
+                    __nav_track_path "$result_path"
+                    [ "$source_mode" != "learned" ] && __nav_track_usage "$result_label"
+                    ;;
+                print)
+                    printf '%s\n' "$result_path"
+                    ;;
+                *)
+                    cd "$result_path" || return 1
+                    [ "$source_mode" != "learned" ] && __nav_track_usage "$result_label"
+                    ;;
+            esac
+        else
+            echo "Error: path '${result_path}' no longer exists." >&2
+            return 1
+        fi
+    fi
+}
+
+__nav_interactive_dispatch() {
+    # Parses an optional trailing -o [program] / -p after a mode subcommand
+    # (nav i, nav interactive, nav f, nav frequent) into an __nav_interactive call.
+    local source_mode="$1"
+    shift
+    local action="cd" override=""
+    case "$1" in
+        -o) action="open"; override="$2" ;;
+        -p) action="print" ;;
+    esac
+    __nav_interactive "$action" "$override" "$source_mode"
+}
+
+# ─── cd hook (feeds "nav f"'s learned paths) ───────────────────────────────────
+#
+# Wraps the `cd` builtin so every successful directory change — via a nav
+# alias, `nav f` itself, or a plain hand-typed `cd` — is logged for `nav f`.
+# Disable with `nav config track off` if you'd rather it not touch `cd` at
+# all (the wrapper stays installed either way, it just becomes a no-op
+# passthrough). If you already have your own `cd` function, whichever one
+# is sourced *last* in your shell startup wins — reorder your `source`
+# lines if you want both.
+
+cd() {
+    builtin cd "$@"
+    local rc=$?
+    if [ $rc -eq 0 ] && [ "$(__nav_config_get_track)" = "on" ]; then
+        __nav_track_path "$PWD"
+    fi
+    return $rc
+}
+
 # ─── Navigation ───────────────────────────────────────────────────────────────
 
 __nav_goto() {
     local alias="$1"
-    local path=$(__nav_resolve_alias "$alias")
+    shift
+
+    local path
+    path=$(__nav_resolve_alias "$alias")
 
     if [ -z "$path" ]; then
         echo "Error: Alias '${alias}' not found." >&2
@@ -398,11 +1167,40 @@ __nav_goto() {
         return 1
     fi
 
-    if [ "$2" == "-o" ]; then
-        __nav_open "$path" "$3"
-    else
-        cd "$path"
-    fi
+    case "$1" in
+        -o)
+            shift
+            __nav_open "$path" "$1"
+            local rc=$?
+            __nav_track_usage "$alias"
+            __nav_track_path "$path"
+            return $rc
+            ;;
+        -p)
+            # Print the path instead of cd'ing — e.g. `cd "$(nav proj -p)"`.
+            # Not tracked as a "visit": it's meant for scripting/lookups.
+            printf '%s\n' "$path"
+            ;;
+        -x)
+            shift
+            if [ $# -eq 0 ]; then
+                echo "Usage: nav <alias> -x <command> [args...]" >&2
+                return 1
+            fi
+            ( cd "$path" && "$@" )
+            local rc=$?
+            __nav_track_usage "$alias"
+            return $rc
+            ;;
+        "")
+            cd "$path" || return 1
+            __nav_track_usage "$alias"
+            ;;
+        *)
+            echo "Usage: nav <alias> [-o [program] | -p | -x <command> [args...]]" >&2
+            return 1
+            ;;
+    esac
 }
 
 # ─── Help ─────────────────────────────────────────────────────────────────────
@@ -421,21 +1219,37 @@ __nav_help() {
     echo "  Usage: nav <command> [options]"
     echo ""
     echo "  Navigation:"
+    echo "    nav                             Interactive: your most-used aliases; type to search all."
+    echo "    nav i | nav interactive         Interactive: every alias you've defined."
+    echo "    nav o | nav opener [program]    Like 'nav', but Enter opens instead of cd."
+    echo "    nav p | nav print               Like 'nav', but Enter prints the path instead of cd."
+    echo "    nav f | nav frequent            Interactive: paths nav learned from your 'cd' history."
     echo "    nav <alias>                     Navigate to the path defined by the alias."
     echo "    nav <alias> -o [program]        Open alias path with opener (override or config)."
+    echo "    nav <alias> -p                  Print the alias path instead of cd'ing (for scripts)."
+    echo "    nav <alias> -x <cmd> [args...]  Run a command in the alias path without leaving your shell."
+    echo ""
+    echo "    In interactive mode: type to search, Ctrl-D deletes the highlighted entry."
     echo ""
     echo "  Alias management:"
-    echo "    nav set --alias a [--path p]    Set or update an alias 'a' to a path 'p'."
+    echo "    nav set [--alias a] [--path p]  Set/update alias 'a' to path 'p' (defaults: cwd, folder name)."
     echo "    nav unset <alias>               Remove an alias."
     echo "    nav list                        List all defined aliases."
+    echo "    nav prune [-y]                  Remove aliases whose path no longer exists."
     echo "    nav import <file>               Import aliases from a text file."
     echo "    nav export [--name file]        Export aliases to a file."
+    echo ""
+    echo "  Stats:"
+    echo "    nav usage show|clear            Show/reset how often each alias was used."
+    echo "    nav learned show|clear          Show/reset paths auto-learned via 'cd' (nav f's data)."
     echo ""
     echo "  Configuration:"
     echo "    nav config opener [<cmd|ASK>]   Show or set the default opener."
     echo "    nav config openers list         List configured openers for ASK mode."
     echo "    nav config openers add \"d - c\"  Add an opener (format: \"desc - command\")."
     echo "    nav config openers remove <n>   Remove an opener by number."
+    echo "    nav config page_size [<n>]      Show or set interactive mode page size (default 10)."
+    echo "    nav config track [<on|off>]     Show or set 'nav f' auto-tracking of 'cd' (default on)."
     echo "    nav config show                 Show full configuration."
     echo ""
     echo "    nav help                        Show this help message."
@@ -446,19 +1260,30 @@ __nav_help() {
 nav() {
     __nav_ensure_aliases
     __nav_ensure_config
+    __nav_ensure_usage
+    __nav_ensure_frecent
 
     if [[ $# -eq 0 ]]; then
-        __nav_help
-        return 0
+        __nav_interactive cd "" smart
+        return $?
     fi
 
     case "$1" in
         set)      shift; __nav_set "$@" ;;
         unset)    shift; __nav_unset "$@" ;;
         list)     __nav_list ;;
+        prune)    shift; __nav_prune "$@" ;;
         export)   shift; __nav_export "$@" ;;
         import)   shift; __nav_import "$@" ;;
         config)   shift; __nav_config "$@" ;;
+        usage)    shift; __nav_usage_cmd "$@" ;;
+        learned)  shift; __nav_learned_cmd "$@" ;;
+        -o)       shift; __nav_interactive open "$1" smart ;;
+        -p)       __nav_interactive print "" smart ;;
+        i|interactive) shift; __nav_interactive_dispatch all "$@" ;;
+        o|opener)      shift; __nav_interactive open "$1" smart ;;
+        p|print)       __nav_interactive print "" smart ;;
+        f|frequent)    shift; __nav_interactive_dispatch learned "$@" ;;
         help|--help|-h) __nav_help ;;
         *)        __nav_goto "$@" ;;
     esac
@@ -477,7 +1302,7 @@ __nav_complete() {
     local aliases
     aliases=$(cut -d'=' -f1 "$NAV_ALIASES_FILE" 2>/dev/null)
 
-    local subcommands="set unset list export import config help"
+    local subcommands="set unset list prune export import config usage learned interactive i opener o print p frequent f help -o -p"
 
     if [[ $COMP_CWORD -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${subcommands} ${aliases}" -- "$cur") )
@@ -497,19 +1322,27 @@ __nav_complete() {
         export)
             COMPREPLY=( $(compgen -W "--name" -- "$cur") )
             ;;
+        prune)
+            COMPREPLY=( $(compgen -W "-y --yes" -- "$cur") )
+            ;;
+        usage|learned)
+            COMPREPLY=( $(compgen -W "show clear" -- "$cur") )
+            ;;
         config)
             if [[ $COMP_CWORD -eq 2 ]]; then
-                COMPREPLY=( $(compgen -W "opener openers show" -- "$cur") )
+                COMPREPLY=( $(compgen -W "opener openers page_size track show" -- "$cur") )
             elif [[ "${COMP_WORDS[2]}" == "openers" && $COMP_CWORD -eq 3 ]]; then
                 COMPREPLY=( $(compgen -W "add remove list" -- "$cur") )
             elif [[ "${COMP_WORDS[2]}" == "opener" && $COMP_CWORD -eq 3 ]]; then
                 COMPREPLY=( $(compgen -W "ASK explorer.exe" -- "$cur") )
+            elif [[ "${COMP_WORDS[2]}" == "track" && $COMP_CWORD -eq 3 ]]; then
+                COMPREPLY=( $(compgen -W "on off" -- "$cur") )
             fi
             ;;
         *)
-            # `nav <alias> ...` — an alias was typed in position 1, offer -o next
+            # `nav <alias> ...` — an alias was typed in position 1, offer flags next
             if [[ $COMP_CWORD -eq 2 ]]; then
-                COMPREPLY=( $(compgen -W "-o" -- "$cur") )
+                COMPREPLY=( $(compgen -W "-o -p -x" -- "$cur") )
             fi
             ;;
     esac

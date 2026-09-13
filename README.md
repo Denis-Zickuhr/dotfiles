@@ -48,8 +48,12 @@ extensions/
     install                Installation script
     README.md              Documentation
 bashrc/
-  nav                      Directory navigation helper
+  nav                      Directory navigation helper (interactive picker: `nav`)
+  README.md                nav documentation and install guide
 ```
+
+See [bashrc/README.md](bashrc/README.md) for `nav`'s full command reference,
+its interactive picker mode, and curl-based install instructions.
 
 ## License
 
