@@ -2,7 +2,7 @@
 
 ## Description
 
-Displays contextual information about the current branch including the branch name, associated ticket/issue link, and pull request info. Supports multiple ticket providers (Jira, Linear, GitHub Issues) with configurable settings stored in global git config.
+Displays contextual information about the current branch including the branch name, repo link, associated ticket/issue link, and pull request info. Supports multiple ticket providers (Jira, Linear, GitHub Issues) with configurable settings stored in global git config.
 
 ## Usage
 
@@ -17,6 +17,7 @@ git ctx [options]
 | `-b`, `--branch` | Show only the branch name |
 | `-t`, `--ticket` | Show only the ticket/issue link |
 | `-p`, `--pr` | Show only the PR info |
+| `-r`, `--repo` | Show only the repo link |
 | `--set-provider <p>` | Set the ticket provider (jira, linear, github-issues) |
 | `--set-domain <d>` | Set the provider domain/workspace |
 | `--set-prefix <x>` | Set a custom URL prefix (overrides provider logic) |
@@ -48,6 +49,9 @@ git ctx --ticket
 
 # Show only PR info (requires gh CLI)
 git ctx --pr
+
+# Show only the repo link
+git ctx --repo
 
 # Use a custom URL prefix
 git ctx --set-prefix "https://mytracker.com/issues/"

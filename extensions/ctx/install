@@ -2,7 +2,7 @@
 
 SCRIPT_CONTENT=$(cat <<'EOF'
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m";
-    VERSION="1.0.0";
+    VERSION="1.1.0";
 
     show_help() {
         cat <<-MSG
@@ -14,6 +14,7 @@ Options:
     -b, --branch        Show only the branch name
     -t, --ticket        Show only the ticket/issue link
     -p, --pr            Show only the PR info
+    -r, --repo          Show only the repo link
     --set-provider <p>  Set the ticket provider (jira, linear, github-issues)
     --set-domain <d>    Set the provider domain/workspace
     --set-prefix <x>    Set a custom URL prefix (overrides provider logic)
@@ -48,6 +49,18 @@ MSG
 
     get_branch() {
         git rev-parse --abbrev-ref HEAD 2>/dev/null
+    }
+
+    get_repo_path() {
+        local remote_url=$(git config --get remote.origin.url 2>/dev/null)
+        echo "$remote_url" | sed -E "s#(git@github.com:|https://github.com/)([^.]+)(\.git)?#\2#"
+    }
+
+    resolve_repo() {
+        local repo_path=$(get_repo_path)
+        if [ -n "$repo_path" ]; then
+            echo "https://github.com/${repo_path}"
+        fi
     }
 
     extract_prefix() {
@@ -86,8 +99,7 @@ MSG
                 echo "https://linear.app/team/${team}/issue/${prefix}"
                 ;;
             github-issues)
-                local remote_url=$(git config --get remote.origin.url 2>/dev/null)
-                local repo_path=$(echo "$remote_url" | sed -E "s#(git@github.com:|https://github.com/)([^.]+)(.git)?#\2#")
+                local repo_path=$(get_repo_path)
                 local issue_num=$(echo "$prefix" | grep -oE "[0-9]+")
                 if [ -n "$repo_path" ] && [ -n "$issue_num" ]; then
                     echo "https://github.com/${repo_path}/issues/${issue_num}"
@@ -118,8 +130,7 @@ MSG
             echo "$url"
         else
             # Generate create link
-            local remote_url=$(git config --get remote.origin.url 2>/dev/null)
-            local repo_path=$(echo "$remote_url" | sed -E "s#(git@github.com:|https://github.com/)([^.]+)(.git)?#\2#")
+            local repo_path=$(get_repo_path)
             local default_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
             default_branch=${default_branch:-main}
             if [ -n "$repo_path" ]; then
@@ -152,6 +163,11 @@ MSG
         fi
 
         echo -e "${GREEN}${branch}${NC}"
+
+        local repo=$(resolve_repo)
+        if [ -n "$repo" ]; then
+            echo -e "📦 ${repo}"
+        fi
 
         local ticket=$(resolve_ticket_url "$branch")
         if [ -n "$ticket" ]; then
@@ -231,6 +247,14 @@ MSG
         -p|--pr)
             branch=$(get_branch)
             resolve_pr "$branch"
+            ;;
+        -r|--repo)
+            repo=$(resolve_repo)
+            if [ -n "$repo" ]; then
+                echo "$repo"
+            else
+                echo -e "${YELLOW}No remote repository found.${NC}"
+            fi
             ;;
         --set-provider)
             if [ -z "$2" ]; then

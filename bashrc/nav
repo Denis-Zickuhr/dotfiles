@@ -245,6 +245,12 @@ __nav_exec_opener() {
     else
         "$cmd" "$path"
     fi
+
+    # GUI openers (explorer.exe and friends) routinely report a non-zero exit
+    # code under WSL even though the window opened fine; propagating that
+    # made callers/readers treat a successful `-o` as a failure/skip. The
+    # open was fired, so report success regardless of the opener's own status.
+    return 0
 }
 
 __nav_open() {
@@ -457,3 +463,60 @@ nav() {
         *)        __nav_goto "$@" ;;
     esac
 }
+
+# ─── Tab completion ───────────────────────────────────────────────────────────
+
+__nav_complete() {
+    local cur prev top
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    top="${COMP_WORDS[1]}"
+
+    __nav_ensure_aliases
+    local aliases
+    aliases=$(cut -d'=' -f1 "$NAV_ALIASES_FILE" 2>/dev/null)
+
+    local subcommands="set unset list export import config help"
+
+    if [[ $COMP_CWORD -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "${subcommands} ${aliases}" -- "$cur") )
+        return 0
+    fi
+
+    case "$top" in
+        unset)
+            COMPREPLY=( $(compgen -W "${aliases}" -- "$cur") )
+            ;;
+        set)
+            COMPREPLY=( $(compgen -W "--alias --path" -- "$cur") )
+            ;;
+        import)
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            ;;
+        export)
+            COMPREPLY=( $(compgen -W "--name" -- "$cur") )
+            ;;
+        config)
+            if [[ $COMP_CWORD -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "opener openers show" -- "$cur") )
+            elif [[ "${COMP_WORDS[2]}" == "openers" && $COMP_CWORD -eq 3 ]]; then
+                COMPREPLY=( $(compgen -W "add remove list" -- "$cur") )
+            elif [[ "${COMP_WORDS[2]}" == "opener" && $COMP_CWORD -eq 3 ]]; then
+                COMPREPLY=( $(compgen -W "ASK explorer.exe" -- "$cur") )
+            fi
+            ;;
+        *)
+            # `nav <alias> ...` — an alias was typed in position 1, offer -o next
+            if [[ $COMP_CWORD -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "-o" -- "$cur") )
+            fi
+            ;;
+    esac
+
+    return 0
+}
+
+if [[ -n "$BASH_VERSION" ]] && command -v complete >/dev/null 2>&1; then
+    complete -F __nav_complete nav
+fi
