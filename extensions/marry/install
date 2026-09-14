@@ -219,14 +219,16 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     # How many diff lines to reveal per page before asking for Enter.
     DIFF_PAGE_LINES=40
 
-    # Print a (colored) diff with simple paging: show a chunk, wait for Enter.
-    # q during paging skips to the end of this file's diff.
+    # Print a (colored) diff with simple paging.
+    # During paging the action buttons stay available; the key that interrupts
+    # paging is reported back in PAGE_KEY: d/u (actions), q (skip), "" (reached end).
     page_diff() {
         local content=$1
         local -a lines=()
         while IFS= read -r l; do lines+=("$l"); done <<< "$content"
         local total=${#lines[@]}
         local i=0
+        PAGE_KEY=""
         while [ "$i" -lt "$total" ]; do
             local end=$(( i + DIFF_PAGE_LINES ))
             [ "$end" -gt "$total" ] && end=$total
@@ -235,11 +237,15 @@ SCRIPT_CONTENT=$(cat <<'EOF'
                 i=$((i+1))
             done
             if [ "$i" -lt "$total" ]; then
-                printf "%b  -- %d/%d lines · Enter: more · q: skip --%b " \
+                printf "%b  -- %d/%d · Enter: more · d: drop · u: unstage · q: skip --%b " \
                     "$GRAY" "$i" "$total" "$NC" >&2
                 local k; IFS= read -rsn1 k < /dev/tty
                 echo >&2
-                [ "$k" = q ] || [ "$k" = Q ] && break
+                case "$k" in
+                    q|Q) PAGE_KEY=q; break;;
+                    d|D) PAGE_KEY=d; break;;
+                    u|U) PAGE_KEY=u; break;;
+                esac
             fi
         done
     }
@@ -291,6 +297,26 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     # Interactive per-file diff browser for the last commit.
     # ←/→ (or h/l): switch files   d: drop (discard)   u: unstage (keep)   q/p: done
+    # Confirm and apply a drop/unstage action. Returns 0 if the file was removed
+    # from the commit (so the caller can adjust its index), 1 otherwise.
+    handle_action() {
+        local action=$1 file=$2 yn
+        if [ "$action" = d ]; then
+            echo ""
+            read -p "  Drop '$file' (discard change)? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[Yy] ]] || return 1
+            if drop_file "$file"; then return 0; fi
+        else
+            echo ""
+            read -p "  Unstage '$file' (keep change, remove from commit)? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[Yy] ]] || return 1
+            if unstage_file "$file"; then return 0; fi
+        fi
+        echo -e "${YELLOW}That's the only change — kept it.${NC}"
+        read -rsn1 < /dev/tty
+        return 1
+    }
+
     browse_diff() {
         local pager=""
         command -v delta >/dev/null 2>&1 && pager="delta --paging=never"
@@ -326,6 +352,14 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             fi
             page_diff "$diff_out"
 
+            # d/u pressed mid-paging: act immediately, skip the footer prompt.
+            if [ "$PAGE_KEY" = d ] || [ "$PAGE_KEY" = u ]; then
+                if handle_action "$PAGE_KEY" "$file"; then
+                    [ "$idx" -gt 0 ] && idx=$((idx-1))
+                fi
+                continue
+            fi
+
             echo ""
             echo -e "${GRAY}[$((idx+1))/$total] ←/→ file · d drop · u unstage · q/p done${NC}"
 
@@ -339,28 +373,9 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             case "$key" in
                 $'\e[C'|l|L) idx=$(( (idx + 1) % total ));;          # right / next
                 $'\e[D'|h|H) idx=$(( (idx - 1 + total) % total ));;  # left / prev
-                d|D)
-                    echo ""
-                    read -p "  Drop '$file' (discard change)? [y/N] " yn < /dev/tty
-                    if [[ "$yn" =~ ^[Yy] ]]; then
-                        if drop_file "$file"; then
-                            [ "$idx" -gt 0 ] && idx=$((idx-1))
-                        else
-                            echo -e "${YELLOW}That's the only change — kept it.${NC}"
-                            read -rsn1 < /dev/tty
-                        fi
-                    fi
-                    ;;
-                u|U)
-                    echo ""
-                    read -p "  Unstage '$file' (keep change, remove from commit)? [y/N] " yn < /dev/tty
-                    if [[ "$yn" =~ ^[Yy] ]]; then
-                        if unstage_file "$file"; then
-                            [ "$idx" -gt 0 ] && idx=$((idx-1))
-                        else
-                            echo -e "${YELLOW}That's the only change — kept it.${NC}"
-                            read -rsn1 < /dev/tty
-                        fi
+                d|D|u|U)
+                    if handle_action "$key" "$file"; then
+                        [ "$idx" -gt 0 ] && idx=$((idx-1))
                     fi
                     ;;
                 q|Q|p|P|"") break;;
