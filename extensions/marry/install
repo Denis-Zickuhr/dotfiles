@@ -360,6 +360,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             local stat=$(git diff --numstat "$range" -- "$file" | awk '{print "+"$1" -"$2}')
             clear
             echo -e "${GRAY}──────────────────────────────────────${NC}"
+            echo -e "  ${GRAY}Branch:${NC} ${GREEN}$BRANCH_NAME${NC}"
             echo -e "  ${CYAN}[$((idx+1))/$total]${NC} ${GREEN}$file${NC}  ${GRAY}$stat${NC}"
             echo -e "  ${GRAY}←/→ h/l: file   d: drop   u: unstage   q/p: done${NC}"
             echo -e "${GRAY}──────────────────────────────────────${NC}"
@@ -401,7 +402,6 @@ SCRIPT_CONTENT=$(cat <<'EOF'
                 q|Q|p|P|"") break;;
             esac
         done
-        clear
     }
 
     step() { printf "  %b›%b %b\n" "$GRAY" "$NC" "$1"; }
@@ -477,7 +477,6 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             commit_msg=$(git log -1 --pretty=%B | head -n1)
             local file_count=$(git diff --name-only HEAD~1..HEAD | grep -c .)
             local stat=$(git diff --shortstat HEAD~1..HEAD | sed 's/^ *//')
-            clear
             echo -e "${GRAY}──────────────────────────────────────${NC}"
             echo -e "  Branch:  ${GREEN}$BRANCH_NAME${NC}"
             echo -e "  Commit:  ${GREEN}$commit_msg${NC}"
