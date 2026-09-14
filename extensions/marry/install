@@ -435,24 +435,33 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         fi
 
         local commit_msg=$(git log -1 --pretty=%B | head -n1)
-        local file_count=$(git diff --name-only HEAD~1..HEAD | grep -c .)
-        local stat=$(git diff --shortstat HEAD~1..HEAD | sed 's/^ *//')
 
-        # Review
-        if [ "$FORCE_PUSH" != true ]; then
-            echo ""
+        # Draw the review panel. Recomputed each time since drop/unstage in the
+        # diff browser can change the commit.
+        show_review() {
+            commit_msg=$(git log -1 --pretty=%B | head -n1)
+            local file_count=$(git diff --name-only HEAD~1..HEAD | grep -c .)
+            local stat=$(git diff --shortstat HEAD~1..HEAD | sed 's/^ *//')
+            clear
             echo -e "${GRAY}──────────────────────────────────────${NC}"
             echo -e "  Branch:  ${GREEN}$BRANCH_NAME${NC}"
             echo -e "  Commit:  ${GREEN}$commit_msg${NC}"
             echo -e "  Files:   ${CYAN}$file_count${NC}  ${GRAY}${stat}${NC}"
             echo -e "${GRAY}──────────────────────────────────────${NC}"
             echo ""
-            read -p "Push and create PR? [Y]es / [d]iff / [n]o " confirm < /dev/tty
-            if [[ "$confirm" =~ ^[dD] ]]; then
-                browse_diff
-                echo ""
-                read -p "Push and create PR? [Y/n] " confirm < /dev/tty
-            fi
+        }
+
+        # Review
+        if [ "$FORCE_PUSH" != true ]; then
+            while true; do
+                show_review
+                read -p "Push and create PR? [Y]es / [d]iff / [n]o " confirm < /dev/tty
+                if [[ "$confirm" =~ ^[dD] ]]; then
+                    browse_diff
+                    continue   # back to the same review screen
+                fi
+                break
+            done
             if [[ "$confirm" =~ ^[nN] ]]; then
                 decline; return
             fi
