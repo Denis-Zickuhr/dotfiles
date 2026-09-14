@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.2.0"
+    VERSION="1.2.1"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -262,7 +262,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         clear
     }
 
-    step() { printf "  ${GRAY}›${NC} %s\n" "$1"; }
+    step() { printf "  %b›%b %b\n" "$GRAY" "$NC" "$1"; }
 
     marry() {
         STASH_PUSHED=false
