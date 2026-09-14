@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.1.0"
+    VERSION="1.1.1"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -114,7 +114,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     COMMIT_MESSAGE="${COMMIT_PREFIX}${TYPE_PART}: ${MSG_BODY}"
     echo -e "${GREEN}Running:${NC} git commit -m \"${CYAN}${COMMIT_MESSAGE}${NC}\""
-    local verify=""
+    verify=""
     [ "$NO_VERIFY" = true ] && verify="--no-verify"
     git commit $verify -m "$COMMIT_MESSAGE"
 EOF
