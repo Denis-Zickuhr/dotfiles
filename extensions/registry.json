@@ -14,7 +14,7 @@
     },
     {
       "name": "marry",
-      "version": "1.2.1",
+      "version": "1.2.0",
       "description": "Create branch, commit, push, and open PR in one flow"
     },
     {
