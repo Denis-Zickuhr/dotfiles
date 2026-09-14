@@ -186,10 +186,30 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     abort() {
         echo -e "${RED}Error. Cleaning up...${NC}"
         local current_br=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-        git reset --mixed >/dev/null 2>&1
-        git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
+
+        # Preserve any uncommitted work before switching/deleting branches.
+        # We only ever delete a branch that carries no commits of its own, so
+        # committed work is never destroyed here.
+        local rescued=false
+        if ! git diff --quiet || ! git diff --cached --quiet || \
+           [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            git stash push -u -m "marry_abort_rescue" >/dev/null 2>&1 && rescued=true
+        fi
+
+        # Only delete the new branch if it has no unique commits vs the original.
         if [ -n "$current_br" ] && [ "$current_br" != "$ORIGINAL_BRANCH" ]; then
-            git branch -D "$current_br" >/dev/null 2>&1
+            git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
+            local unique=$(git rev-list "$ORIGINAL_BRANCH..$current_br" --count 2>/dev/null)
+            if [ "${unique:-0}" -eq 0 ]; then
+                git branch -D "$current_br" >/dev/null 2>&1
+            else
+                echo -e "${YELLOW}Branch $current_br has commits — keeping it.${NC}"
+            fi
+        fi
+
+        # Bring rescued work back, plus anything stashed at the start.
+        if [ "$rescued" = true ]; then
+            git stash pop >/dev/null 2>&1
         fi
         if [ "$STASH_PUSHED" = true ]; then
             git stash pop >/dev/null 2>&1
@@ -484,7 +504,17 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
         # Push
         step "Pushing to origin"
-        git push -u origin "$BRANCH_NAME" >/dev/null 2>&1 || { abort; return 1; }
+        # If the push fails the commit already exists on this branch — never
+        # abort/delete here, that would throw away committed work. Keep the
+        # branch and let the user retry the push.
+        if ! git push -u origin "$BRANCH_NAME" 2>/tmp/marry_push_err; then
+            echo -e "\n${RED}✗ Push failed.${NC} Your commit is safe on ${GREEN}$BRANCH_NAME${NC}."
+            echo -e "${GRAY}$(cat /tmp/marry_push_err 2>/dev/null | head -n3)${NC}"
+            rm -f /tmp/marry_push_err
+            echo -e "Retry with: ${CYAN}git push -u origin $BRANCH_NAME${NC}"
+            return 1
+        fi
+        rm -f /tmp/marry_push_err
 
         # Add to quiver
         if git config --global --get alias.quiver > /dev/null 2>&1; then
