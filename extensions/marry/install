@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.1.0"
+    VERSION="1.2.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -47,8 +47,14 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo -e "${YELLOW}Flow:${NC}"
         echo "  1. Stash → Fresh (if needed) → Create branch"
         echo "  2. Pop stash → Stage → Commit"
-        echo "  3. Push → Create draft PR with template"
-        echo "  4. Add branch to quiver"
+        echo "  3. Review (press 'd' to browse the diff file by file)"
+        echo "  4. Push → Create draft PR with template"
+        echo "  5. Add branch to quiver"
+        echo ""
+        echo -e "${YELLOW}Diff browser:${NC}"
+        echo "  At the review prompt, press 'd' to inspect changes."
+        echo "  ←/→ or h/l  switch files    q/p  back to prompt"
+        echo "  Uses 'delta' as pager when available, else plain diff."
     }
 
     if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
@@ -188,59 +194,116 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     }
 
     decline() {
-        echo -e "\n${YELLOW}Push skipped.${NC}"
-        echo -e "Branch ${GREEN}$BRANCH_NAME${NC} preserved locally."
-        echo ""
-        read -p "Revert and delete branch? [y/N] " revert < /dev/tty
-        if [[ "$revert" =~ ^[Yy] ]]; then
-            git reset --mixed >/dev/null 2>&1
-            git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
-            git branch -D "$BRANCH_NAME" >/dev/null 2>&1
-            if [ "$STASH_PUSHED" = true ]; then git stash pop >/dev/null 2>&1; fi
-            echo -e "${GREEN}Reverted.${NC}"
-        else
-            echo -e "${CYAN}Staying on $BRANCH_NAME.${NC}"
-        fi
+        # User refused the push: undo everything and go back to where we started,
+        # keeping the local changes intact on the original branch.
+        step "Reverting: dropping commit and branch"
+
+        # Undo the commit, keep changes in the working tree
+        git reset --soft HEAD~1 >/dev/null 2>&1
+
+        # Carry the changes back to the original branch via stash
+        git stash push -u -m "marry_revert_stash" >/dev/null 2>&1
+        git checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1
+        git branch -D "$BRANCH_NAME" >/dev/null 2>&1
+        git stash pop >/dev/null 2>&1
+
+        echo -e "${GREEN}✓ Back on ${ORIGINAL_BRANCH} with your changes restored.${NC}"
     }
 
     # --- Main flow ---
+
+    # Interactive per-file diff browser for the last commit.
+    # Arrows ←/→ (or h/l) switch files, q/p exits back to the prompt.
+    browse_diff() {
+        local range="HEAD~1..HEAD"
+        local files=()
+        while IFS= read -r f; do
+            [ -n "$f" ] && files+=("$f")
+        done < <(git diff --name-only "$range")
+
+        local total=${#files[@]}
+        if [ "$total" -eq 0 ]; then
+            echo -e "${YELLOW}No files to show.${NC}"
+            return
+        fi
+
+        local pager="cat"
+        if command -v delta >/dev/null 2>&1; then
+            pager="delta --paging=never"
+        fi
+
+        local idx=0 key
+        while true; do
+            local file="${files[$idx]}"
+            local stat=$(git diff --numstat "$range" -- "$file" | awk '{print "+"$1" -"$2}')
+            clear
+            echo -e "${GRAY}──────────────────────────────────────${NC}"
+            echo -e "  ${CYAN}[$((idx+1))/$total]${NC} ${GREEN}$file${NC}  ${GRAY}$stat${NC}"
+            echo -e "  ${GRAY}←/→ h/l: file   q/p: done${NC}"
+            echo -e "${GRAY}──────────────────────────────────────${NC}"
+            git diff --color=always "$range" -- "$file" | eval "$pager"
+            echo ""
+            echo -e "${GRAY}[$((idx+1))/$total] ←/→ navigate · q/p done${NC}"
+
+            IFS= read -rsn1 key < /dev/tty
+            if [ "$key" = $'\e' ]; then
+                # Read the rest of an escape sequence (arrow keys)
+                local rest
+                read -rsn2 -t 0.01 rest < /dev/tty
+                key="$key$rest"
+            fi
+
+            case "$key" in
+                $'\e[C'|l|L|j|J) idx=$(( (idx + 1) % total ));;          # right / next
+                $'\e[D'|h|H|k|K) idx=$(( (idx - 1 + total) % total ));;  # left / prev
+                q|Q|p|P|"") break;;
+            esac
+        done
+        clear
+    }
+
+    step() { printf "  ${GRAY}›${NC} %s\n" "$1"; }
 
     marry() {
         STASH_PUSHED=false
 
         # Stash if dirty
         if ! git diff --quiet || ! git diff --cached --quiet; then
-            git stash push -u -m "marry_temp_stash" || return 1
+            git stash push -u -m "marry_temp_stash" >/dev/null 2>&1 || return 1
             STASH_PUSHED=true
+            step "Stashed local changes"
         fi
 
         # Smart fresh: skip if already on updated default branch
         if is_fresh; then
-            echo -e "${GRAY}Already on latest. Skipping fresh.${NC}"
+            step "Base branch already up to date"
         else
-            git fresh || { abort; return 1; }
+            step "Syncing base branch"
+            git fresh >/dev/null 2>&1 || { abort; return 1; }
         fi
 
         # Create branch
-        git checkout -b "$BRANCH_NAME" || { abort; return 1; }
+        git checkout -b "$BRANCH_NAME" >/dev/null 2>&1 || { abort; return 1; }
+        step "Created branch ${GREEN}$BRANCH_NAME${NC}"
 
         # Pop stash
         if [ "$STASH_PUSHED" = true ]; then
-            if ! git stash pop; then abort; return 1; fi
+            if ! git stash pop >/dev/null 2>&1; then abort; return 1; fi
             STASH_PUSHED=false
+            step "Restored local changes"
         fi
 
         # Stage files
         if [ "$AUTO_ADD" = true ]; then
-            git add -u
+            git add -u >/dev/null 2>&1
             # Also add untracked if any
             local untracked=$(git ls-files --others --exclude-standard)
             if [ -n "$untracked" ]; then
-                echo "$untracked" | xargs git add
+                echo "$untracked" | xargs git add >/dev/null 2>&1
             fi
         else
             for pattern in $ADD_PATTERNS; do
-                git add "$pattern"
+                git add "$pattern" >/dev/null 2>&1
             done
         fi
 
@@ -256,15 +319,17 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
         if [ -n "$CUSTOM_MESSAGE" ]; then
             git commit $verify_flag -m "$CUSTOM_MESSAGE" > /dev/null 2>&1
+            step "Committed"
         else
             local scope_flag=""
             [ -n "$SCOPE" ] && scope_flag="-s $SCOPE"
-            if ! git cbn $scope_flag $verify_flag; then abort; return 1; fi
+            if ! git cbn $scope_flag $verify_flag >/dev/null 2>&1; then abort; return 1; fi
+            step "Committed"
         fi
 
         local commit_msg=$(git log -1 --pretty=%B | head -n1)
-        local files=$(git diff --name-only HEAD~1)
-        local file_count=$(echo "$files" | wc -l | xargs)
+        local file_count=$(git diff --name-only HEAD~1..HEAD | grep -c .)
+        local stat=$(git diff --shortstat HEAD~1..HEAD | sed 's/^ *//')
 
         # Review
         if [ "$FORCE_PUSH" != true ]; then
@@ -272,21 +337,27 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             echo -e "${GRAY}──────────────────────────────────────${NC}"
             echo -e "  Branch:  ${GREEN}$BRANCH_NAME${NC}"
             echo -e "  Commit:  ${GREEN}$commit_msg${NC}"
-            echo -e "  Files:   ${CYAN}$file_count${NC}"
+            echo -e "  Files:   ${CYAN}$file_count${NC}  ${GRAY}${stat}${NC}"
             echo -e "${GRAY}──────────────────────────────────────${NC}"
             echo ""
-            read -p "Push and create PR? [Y/n] " confirm < /dev/tty
+            read -p "Push and create PR? [Y]es / [d]iff / [n]o " confirm < /dev/tty
+            if [[ "$confirm" =~ ^[dD] ]]; then
+                browse_diff
+                echo ""
+                read -p "Push and create PR? [Y/n] " confirm < /dev/tty
+            fi
             if [[ "$confirm" =~ ^[nN] ]]; then
                 decline; return
             fi
         fi
 
         # Push
-        git push -u origin "$BRANCH_NAME" || { abort; return 1; }
+        step "Pushing to origin"
+        git push -u origin "$BRANCH_NAME" >/dev/null 2>&1 || { abort; return 1; }
 
         # Add to quiver
         if git config --global --get alias.quiver > /dev/null 2>&1; then
-            git quiver -a "$BRANCH_NAME" 2>/dev/null
+            git quiver -a "$BRANCH_NAME" >/dev/null 2>&1
         fi
 
         # Create PR
