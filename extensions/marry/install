@@ -289,35 +289,29 @@ SCRIPT_CONTENT=$(cat <<'EOF'
                 echo -e "${YELLOW}No local changes.${NC}"
             fi
 
-            # Single screen: branch prompt with inline scope/paths buttons.
-            # Type the branch name, or 's'/'p' to tweak scope/paths first.
+            # Clean branch prompt — no clutter.
             while [ -z "$BRANCH_NAME" ]; do
-                local cur_scope="${SCOPE:-${GRAY}(none)${NC}}"
-                local cur_paths="${ADD_PATTERNS# }"; cur_paths="${cur_paths:-${GRAY}src (default)${NC}}"
-                [ "$AUTO_ADD" = true ] && cur_paths="${CYAN}all changes (-a)${NC}"
                 echo ""
-                echo -e "  ${GRAY}Scope:${NC} ${cur_scope}    ${GRAY}Paths:${NC} ${cur_paths}"
-                local answer
-                read -p "$(printf "  %bBranch name%b  ${GRAY}(or %b[s]%b${GRAY}cope / %b[p]%b${GRAY}aths)%b: " \
-                    "$CYAN" "$NC" "$GREEN" "$GRAY" "$GREEN" "$GRAY" "$NC")" answer < /dev/tty
-                case "$answer" in
-                    s|S) read -p "    Scope (Enter for none): " SCOPE < /dev/tty;;
-                    p|P)
-                        read -p "    Paths (comma-separated, Enter for 'src'): " raw < /dev/tty
-                        ADD_PATTERNS=""
-                        if [ -n "$raw" ]; then
-                            local IFS=','
-                            for pth in $raw; do
-                                pth=$(echo "$pth" | sed 's/^ *//;s/ *$//')
-                                [ -n "$pth" ] && ADD_PATTERNS="$ADD_PATTERNS $pth"
-                            done
-                            AUTO_ADD=false
-                        fi
-                        ;;
-                    '') echo -e "  ${YELLOW}Branch name is required.${NC}";;
-                    *)  BRANCH_NAME="$answer";;
-                esac
+                read -p "$(printf "  %bBranch name:%b " "$CYAN" "$NC")" BRANCH_NAME < /dev/tty
+                [ -z "$BRANCH_NAME" ] && echo -e "  ${YELLOW}Branch name is required.${NC}"
             done
+
+            # Optional tweaks, offered separately so the common path stays simple.
+            local more
+            read -p "$(printf "  %bAdjust scope or paths?%b ${GRAY}[y/N]${NC} " "$GRAY" "$NC")" more < /dev/tty
+            if [[ "$more" =~ ^[yY] ]]; then
+                read -p "    Scope (Enter for none): " SCOPE < /dev/tty
+                read -p "    Paths (comma-separated, Enter for 'src'): " raw < /dev/tty
+                ADD_PATTERNS=""
+                if [ -n "$raw" ]; then
+                    local IFS=','
+                    for pth in $raw; do
+                        pth=$(echo "$pth" | sed 's/^ *//;s/ *$//')
+                        [ -n "$pth" ] && ADD_PATTERNS="$ADD_PATTERNS $pth"
+                    done
+                    AUTO_ADD=false
+                fi
+            fi
             echo ""
         fi
     }
