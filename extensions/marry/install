@@ -257,22 +257,66 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     # If no branch was given, ask for it. Scope and paths are intentionally not
     # asked here — they default (no scope, paths='src') and can be refined on the
     # review screen. marry.guided is the master switch.
+    # Colorize a `git status --short` line by its XY status code.
+    color_status() {
+        local line=$1
+        local code=${line:0:2}
+        local rest=${line:3}
+        local c="$NC"
+        case "$code" in
+            '??')                     c="$GRAY";;    # untracked
+            ' M'|' D'|'AM'|'MM')      c="$YELLOW";;  # unstaged changes present
+            'A '|'M '|'D ')           c="$GREEN";;   # staged
+            'R '|'C ')                c="$CYAN";;    # renamed/copied
+            *)                        c="$NC";;
+        esac
+        printf "    %b%s%b %s\n" "$c" "$code" "$NC" "$rest"
+    }
+
     run_guided() {
         if [ -z "$BRANCH_NAME" ]; then
-            # Summary of pending changes (guided runs before the stash).
+            # Colored summary of pending changes (guided runs before the stash).
             local changed=$(git status --short 2>/dev/null)
             if [ -n "$changed" ]; then
                 local count=$(printf '%s\n' "$changed" | grep -c .)
-                echo -e "${GRAY}Changes to include (${count}):${NC}"
-                printf '%s\n' "$changed" | sed 's/^/  /'
-                echo ""
+                echo -e "${GRAY}──────────────────────────────────────${NC}"
+                echo -e "  ${CYAN}Changes to include${NC} ${GRAY}(${count})${NC}"
+                while IFS= read -r l; do
+                    [ -n "$l" ] && color_status "$l"
+                done <<< "$changed"
+                echo -e "${GRAY}──────────────────────────────────────${NC}"
             else
                 echo -e "${YELLOW}No local changes.${NC}"
-                echo ""
             fi
+
+            # Single screen: branch prompt with inline scope/paths buttons.
+            # Type the branch name, or 's'/'p' to tweak scope/paths first.
             while [ -z "$BRANCH_NAME" ]; do
-                read -p "  Branch name: " BRANCH_NAME < /dev/tty
-                [ -z "$BRANCH_NAME" ] && echo -e "  ${YELLOW}Branch name is required.${NC}"
+                local cur_scope="${SCOPE:-${GRAY}(none)${NC}}"
+                local cur_paths="${ADD_PATTERNS# }"; cur_paths="${cur_paths:-${GRAY}src (default)${NC}}"
+                [ "$AUTO_ADD" = true ] && cur_paths="${CYAN}all changes (-a)${NC}"
+                echo ""
+                echo -e "  ${GRAY}Scope:${NC} ${cur_scope}    ${GRAY}Paths:${NC} ${cur_paths}"
+                local answer
+                read -p "$(printf "  %bBranch name%b  ${GRAY}(or %b[s]%b${GRAY}cope / %b[p]%b${GRAY}aths)%b: " \
+                    "$CYAN" "$NC" "$GREEN" "$GRAY" "$GREEN" "$GRAY" "$NC")" answer < /dev/tty
+                case "$answer" in
+                    s|S) read -p "    Scope (Enter for none): " SCOPE < /dev/tty;;
+                    p|P)
+                        read -p "    Paths (comma-separated, Enter for 'src'): " raw < /dev/tty
+                        ADD_PATTERNS=""
+                        if [ -n "$raw" ]; then
+                            local IFS=','
+                            for pth in $raw; do
+                                pth=$(echo "$pth" | sed 's/^ *//;s/ *$//')
+                                [ -n "$pth" ] && ADD_PATTERNS="$ADD_PATTERNS $pth"
+                            done
+                            AUTO_ADD=false
+                        fi
+                        ;;
+                    '') echo -e "  ${YELLOW}Branch name is required.${NC}";;
+                    *)  BRANCH_NAME="$answer";;
+                esac
             done
             echo ""
         fi
