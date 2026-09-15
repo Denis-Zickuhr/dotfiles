@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.3.0"
+    VERSION="1.4.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -63,6 +63,8 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "  ←/→ or h/l  switch files"
         echo "  d           drop file    (discard the change)"
         echo "  u           unstage file (keep change, remove from commit)"
+        echo "  o           toggle 'outside' view (changes not in the commit)"
+        echo "  i / Enter   in outside view: include the file into the commit"
         echo "  q/p         back to prompt"
         echo "  Long diffs are shown a page at a time (Enter for more, q to skip)."
         echo "  Uses 'delta' as pager when available, else plain diff."
@@ -397,6 +399,15 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         return 0
     }
 
+    # INCLUDE: bring a file that's outside the commit (unstaged/untracked) into
+    # the current commit, keeping a single commit (amend).
+    include_file() {
+        local file=$1
+        git add -- "$file" >/dev/null 2>&1 || return 1
+        git commit --amend --no-edit --no-verify >/dev/null 2>&1
+        return 0
+    }
+
     # Interactive per-file diff browser for the last commit.
     # ←/→ (or h/l): switch files   d: drop (discard)   u: unstage (keep)   q/p: done
     # Confirm and apply a drop/unstage action. Returns 0 if the file was removed
@@ -423,40 +434,68 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local pager=""
         command -v delta >/dev/null 2>&1 && pager="delta --paging=never"
 
+        local mode="commit"   # commit | outside
         local idx=0 key
         while true; do
-            local range="HEAD~1..HEAD"
+            # Build the file list for the current mode.
             local files=()
-            while IFS= read -r f; do
-                [ -n "$f" ] && files+=("$f")
-            done < <(git diff --name-only "$range")
+            if [ "$mode" = commit ]; then
+                while IFS= read -r f; do
+                    [ -n "$f" ] && files+=("$f")
+                done < <(git diff --name-only HEAD~1..HEAD)
+            else
+                # Changes outside the commit: unstaged tracked + untracked.
+                while IFS= read -r f; do
+                    [ -n "$f" ] && files+=("${f:3}")
+                done < <(git status --short 2>/dev/null | grep -E '^( M| D|\?\?| A|MM|AM)')
+            fi
+
+            local outside_count=$(git status --short 2>/dev/null | grep -Ec '^( M| D|\?\?| A|MM|AM)')
 
             local total=${#files[@]}
             if [ "$total" -eq 0 ]; then
-                echo -e "${YELLOW}No files left in commit.${NC}"
-                return
+                if [ "$mode" = commit ]; then
+                    echo -e "${YELLOW}No files left in commit.${NC}"
+                    return
+                else
+                    # Nothing outside — bounce back to commit mode.
+                    echo -e "${YELLOW}No changes outside the commit.${NC}"
+                    read -rsn1 < /dev/tty
+                    mode="commit"; idx=0; continue
+                fi
             fi
             [ "$idx" -ge "$total" ] && idx=$((total-1))
 
             local file="${files[$idx]}"
-            local stat=$(git diff --numstat "$range" -- "$file" | awk '{print "+"$1" -"$2}')
             clear
             echo -e "${GRAY}──────────────────────────────────────${NC}"
             echo -e "  ${GRAY}Branch:${NC} ${GREEN}$BRANCH_NAME${NC}"
-            echo -e "  ${CYAN}[$((idx+1))/$total]${NC} ${GREEN}$file${NC}  ${GRAY}$stat${NC}"
-            echo -e "  ${GRAY}←/→ h/l: file   d: drop   u: unstage   q/p: done${NC}"
+            if [ "$mode" = commit ]; then
+                local stat=$(git diff --numstat HEAD~1..HEAD -- "$file" | awk '{print "+"$1" -"$2}')
+                echo -e "  ${CYAN}[commit $((idx+1))/$total]${NC} ${GREEN}$file${NC}  ${GRAY}$stat${NC}"
+                echo -e "  ${GRAY}←/→: file   d: drop   u: unstage   o: outside (${outside_count})   q/p: done${NC}"
+            else
+                echo -e "  ${YELLOW}[outside $((idx+1))/$total]${NC} ${GREEN}$file${NC}"
+                echo -e "  ${GRAY}←/→: file   i/Enter: include   o: back to commit   q/p: done${NC}"
+            fi
             echo -e "${GRAY}──────────────────────────────────────${NC}"
 
             local diff_out
-            if [ -n "$pager" ]; then
-                diff_out=$(git diff --color=always "$range" -- "$file" | eval "$pager")
+            if [ "$mode" = commit ]; then
+                diff_out=$(git diff --color=always HEAD~1..HEAD -- "$file")
             else
-                diff_out=$(git diff --color=always "$range" -- "$file")
+                # Show working-tree diff; for untracked files show the content.
+                if git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
+                    diff_out=$(git diff --color=always HEAD -- "$file")
+                else
+                    diff_out=$(git diff --color=always --no-index -- /dev/null "$file" 2>/dev/null)
+                fi
             fi
+            [ -n "$pager" ] && diff_out=$(printf '%s\n' "$diff_out" | eval "$pager")
             page_diff "$diff_out"
 
-            # d/u pressed mid-paging: act immediately, skip the footer prompt.
-            if [ "$PAGE_KEY" = d ] || [ "$PAGE_KEY" = u ]; then
+            # In commit mode, d/u pressed mid-paging act immediately.
+            if [ "$mode" = commit ] && { [ "$PAGE_KEY" = d ] || [ "$PAGE_KEY" = u ]; }; then
                 if handle_action "$PAGE_KEY" "$file"; then
                     [ "$idx" -gt 0 ] && idx=$((idx-1))
                 fi
@@ -464,7 +503,11 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             fi
 
             echo ""
-            echo -e "${GRAY}[$((idx+1))/$total] ←/→ file · d drop · u unstage · q/p done${NC}"
+            if [ "$mode" = commit ]; then
+                echo -e "${GRAY}[commit $((idx+1))/$total] ←/→ · d drop · u unstage · o outside(${outside_count}) · q/p done${NC}"
+            else
+                echo -e "${GRAY}[outside $((idx+1))/$total] ←/→ · i include · o commit · q/p done${NC}"
+            fi
 
             IFS= read -rsn1 key < /dev/tty
             if [ "$key" = $'\e' ]; then
@@ -476,12 +519,29 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             case "$key" in
                 $'\e[C'|l|L) idx=$(( (idx + 1) % total ));;          # right / next
                 $'\e[D'|h|H) idx=$(( (idx - 1 + total) % total ));;  # left / prev
-                d|D|u|U)
-                    if handle_action "$key" "$file"; then
-                        [ "$idx" -gt 0 ] && idx=$((idx-1))
+                o|O) mode=$([ "$mode" = commit ] && echo outside || echo commit); idx=0;;
+                q|Q|p|P) break;;
+                *)
+                    if [ "$mode" = commit ]; then
+                        case "$key" in
+                            d|D|u|U)
+                                if handle_action "$key" "$file"; then
+                                    [ "$idx" -gt 0 ] && idx=$((idx-1))
+                                fi
+                                ;;
+                            "") break;;
+                        esac
+                    else
+                        case "$key" in
+                            i|I|"")   # include (Enter or i)
+                                if include_file "$file"; then
+                                    echo -e "  ${GREEN}Included $file into the commit.${NC}"
+                                    [ "$idx" -gt 0 ] && idx=$((idx-1))
+                                fi
+                                ;;
+                        esac
                     fi
                     ;;
-                q|Q|p|P|"") break;;
             esac
         done
     }

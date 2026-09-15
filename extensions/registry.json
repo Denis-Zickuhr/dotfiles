@@ -14,8 +14,8 @@
     },
     {
       "name": "marry",
-      "version": "1.3.0",
-      "description": "Create branch, commit, push, and open PR — with a guided prompt mode"
+      "version": "1.4.0",
+      "description": "Create branch, commit, push, and open PR — guided mode and diff browser with include/drop/unstage"
     },
     {
       "name": "torch",
