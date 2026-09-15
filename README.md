@@ -22,7 +22,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Denis-Zickuhr/dotfiles/main/in
 | hotfix | Cherry-pick commits into multiple targets with PR links |
 | copen | Open modified files in your editor |
 | fresh | Switch to main and sync with remote |
-| pr | Show or create pull request |
+| pr | Create or list PRs, with template body and interactive label picker |
 | wip | Quick work-in-progress commits |
 | sync | Rebase or merge upstream into current branch |
 | standup | Show recent commits for daily standups |

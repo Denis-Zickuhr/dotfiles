@@ -1,109 +1,401 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.0.0"
-    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; NC="\033[0m"
+    VERSION="2.0.0"
+    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
-        echo -e "${CYAN}git pr${NC} - List pull requests for the current branch or create new ones"
+        echo -e "${CYAN}git pr v$VERSION${NC} - Create and manage pull requests"
         echo ""
-        echo -e "${YELLOW}Usage:${NC} git pr [options]"
+        echo -e "${YELLOW}Usage:${NC}"
+        echo "  git pr                 Show/create PR for the current branch"
+        echo "  git pr create          Create a draft PR (template + optional labels)"
+        echo "  git pr -a, --all       List all PRs authored by you"
         echo ""
         echo -e "${YELLOW}Options:${NC}"
-        echo "  -a, --all          List all PRs authored by you"
-        echo "  -b <branch>        Specify base branch (defaults to repo default branch)"
-        echo "  -h, --help         Show this help message"
-        echo "  -v, --version      Show version"
+        echo "  -t, --title <msg>      PR title (default: last commit subject)"
+        echo "  -b, --base <branch>    Base branch (default: repo default)"
+        echo "  --no-labels            Skip the label step"
+        echo "  -f, --force            No prompts (accept defaults)"
+        echo "  -h, --help             Show help"
+        echo "  -v, --version          Show version"
         echo ""
-        echo -e "${YELLOW}Examples:${NC}"
-        echo "  git pr             Show PRs for current branch"
-        echo "  git pr -a          Show all your PRs"
-        echo "  git pr -b main     Use 'main' as base branch for compare URL"
+        echo -e "${YELLOW}Labels:${NC}"
+        echo "  After creating a PR you can pick labels from the repo:"
+        echo "  multi-select with paging, type to filter, most-used first."
+        echo "  Usage counts are stored locally per repo."
+        echo ""
+        echo -e "${YELLOW}PR body template (shared with git marry):${NC}"
+        echo "    git config marry.template \"{title}\\n\\n{ticket}\""
+        echo "  Variables: {title} {ticket} {branch} {prefix}"
     }
 
-    generate_compare_url() {
-        local base_branch="$1"
-        local head_branch="$2"
-        local remote_url repo_path
+    # ---------- ticket / template helpers (shared config with marry) ----------
 
+    get_ticket_prefix() {
+        echo "$1" | grep -oE "[A-Za-z]+-[0-9]+" | head -n 1
+    }
+
+    get_ticket_url() {
+        local branch=$1
+        local prefix=$(get_ticket_prefix "$branch")
+        [ -z "$prefix" ] && { echo ""; return; }
+        local provider=$(git config --global --get ctx.provider 2>/dev/null)
+        local domain=$(git config --global --get ctx.domain 2>/dev/null)
+        local custom_prefix=$(git config --global --get ctx.prefix 2>/dev/null)
+        if [ -n "$custom_prefix" ]; then
+            echo "${custom_prefix}${prefix}"
+        elif [ "$provider" = "jira" ] && [ -n "$domain" ]; then
+            echo "https://${domain}/browse/${prefix}"
+        elif [ "$provider" = "linear" ] && [ -n "$domain" ]; then
+            echo "https://linear.app/${domain}/issue/${prefix}"
+        else
+            echo ""
+        fi
+    }
+
+    get_pr_template() {
+        # pr.template is canonical; fall back to marry.template for compatibility.
+        local tmpl=$(git config --local --get pr.template 2>/dev/null)
+        [ -z "$tmpl" ] && tmpl=$(git config --global --get pr.template 2>/dev/null)
+        [ -z "$tmpl" ] && tmpl=$(git config --local --get marry.template 2>/dev/null)
+        [ -z "$tmpl" ] && tmpl=$(git config --global --get marry.template 2>/dev/null)
+        [ -z "$tmpl" ] && tmpl='{title}\n\n{ticket}'
+        echo "$tmpl"
+    }
+
+    render_template() {
+        local tmpl=$1 title=$2 ticket=$3 branch=$4 prefix=$5
+        local rendered=$(echo -e "$tmpl" | sed "s|{title}|$title|g;s|{ticket}|$ticket|g;s|{branch}|$branch|g;s|{prefix}|$prefix|g")
+        local final=""
+        while IFS= read -r line; do
+            if echo "$line" | grep -q '{{ask'; then
+                local tag=$(echo "$line" | grep -oP '\{\{ask[^}]*\}\}')
+                local before=$(echo "$line" | sed "s|$tag.*||")
+                local after=$(echo "$line" | sed "s|.*$tag||")
+                local question="" default_val=""
+                if echo "$tag" | grep -qP '^\{\{ask:-"[^"]*":"[^"]*"\}\}$'; then
+                    default_val=$(echo "$tag" | sed 's/{{ask:-"//;s/":.*//')
+                    question=$(echo "$tag" | sed 's/.*":"//;s/"}}//')
+                elif echo "$tag" | grep -qP '^\{\{ask:-[^:]*:"[^"]*"\}\}$'; then
+                    default_val=$(echo "$tag" | sed 's/{{ask:-//;s/:".*//')
+                    question=$(echo "$tag" | sed 's/.*:"//;s/"}}//')
+                elif echo "$tag" | grep -qP '^\{\{ask:"[^"]*"\}\}$'; then
+                    question=$(echo "$tag" | sed 's/{{ask:"//;s/"}}//')
+                fi
+                local answer=""
+                if [ -n "$default_val" ]; then
+                    printf "  ${CYAN}$question${NC} ${GRAY}[$default_val]${NC}: " >&2
+                    read -r answer < /dev/tty
+                    answer="${answer:-$default_val}"
+                else
+                    printf "  ${CYAN}$question${NC}: " >&2
+                    read -r answer < /dev/tty
+                fi
+                final+="${before}${answer}${after}"$'\n'
+            else
+                final+="$line"$'\n'
+            fi
+        done <<< "$rendered"
+        echo "${final%$'\n'}"
+    }
+
+    # ---------- label usage counter (local, per repo) ----------
+
+    usage_file() {
+        local root=$(git rev-parse --show-toplevel 2>/dev/null)
+        local key=$(echo "$root" | sed 's|/|_|g')
+        local dir="${XDG_CONFIG_HOME:-$HOME/.config}/git-pr"
+        mkdir -p "$dir" 2>/dev/null
+        echo "$dir/labels${key}"
+    }
+
+    # Bump the usage count for each selected label.
+    bump_usage() {
+        local f=$(usage_file)
+        local lbl
+        for lbl in "$@"; do
+            local cur=$(grep -F -- "	$lbl" "$f" 2>/dev/null | head -1 | cut -f1)
+            cur=${cur:-0}
+            local new=$((cur+1))
+            # rewrite file without this label, then append updated count
+            if [ -f "$f" ]; then grep -vF -- "	$lbl" "$f" > "$f.tmp" 2>/dev/null; mv "$f.tmp" "$f"; fi
+            printf '%d\t%s\n' "$new" "$lbl" >> "$f"
+        done
+    }
+
+    usage_count() {
+        local f=$(usage_file)
+        grep -F -- "	$1" "$f" 2>/dev/null | head -1 | cut -f1
+    }
+
+    # ---------- label multi-select (paging + type-to-filter + most-used) ----------
+    # Populates the global SELECTED_LABELS array.
+    select_labels() {
+        SELECTED_LABELS=()
+        local -a all=()
+        while IFS= read -r l; do [ -n "$l" ] && all+=("$l"); done < <(
+            gh label list --limit 200 --json name --jq '.[].name' 2>/dev/null
+        )
+        if [ ${#all[@]} -eq 0 ]; then
+            echo -e "  ${YELLOW}No labels found in this repo.${NC}"
+            return
+        fi
+
+        # Sort by local usage desc, then name asc.
+        local -a sorted=()
+        while IFS= read -r l; do sorted+=("$l"); done < <(
+            for l in "${all[@]}"; do
+                printf '%s\t%s\n' "$(usage_count "$l" 2>/dev/null || echo 0)" "$l"
+            done | sort -t$'\t' -k1,1nr -k2,2 | cut -f2
+        )
+
+        local -A picked=()
+        local filter="" page=0 per=8
+        while true; do
+            # Apply filter (in-memory, case-insensitive substring).
+            local -a view=()
+            local l
+            for l in "${sorted[@]}"; do
+                if [ -z "$filter" ] || echo "$l" | grep -qi -- "$filter"; then
+                    view+=("$l")
+                fi
+            done
+            local n=${#view[@]}
+            local pages=$(( (n + per - 1) / per )); [ "$pages" -eq 0 ] && pages=1
+            [ "$page" -ge "$pages" ] && page=$((pages-1))
+            [ "$page" -lt 0 ] && page=0
+            local start=$((page*per)) end=$((page*per+per))
+            [ "$end" -gt "$n" ] && end=$n
+
+            clear
+            echo -e "${GRAY}──────────────────────────────────────${NC}"
+            echo -e "  ${CYAN}Select labels${NC}   ${GRAY}filter:${NC} ${filter:-${GRAY}(none)${NC}}   ${GRAY}page $((page+1))/$pages${NC}"
+            echo -e "${GRAY}──────────────────────────────────────${NC}"
+            if [ "$n" -eq 0 ]; then
+                echo -e "  ${GRAY}(no match)${NC}"
+            fi
+            local i
+            for ((i=start; i<end; i++)); do
+                local name="${view[$i]}"
+                local mark="  "
+                [ -n "${picked[$name]}" ] && mark="${GREEN}✔${NC} "
+                local u=$(usage_count "$name" 2>/dev/null); u=${u:-0}
+                local hint=""
+                [ "$u" -gt 0 ] && hint=" ${GRAY}(${u})${NC}"
+                printf "   %b %d) %s%b\n" "$mark" "$((i-start+1))" "$name" "$hint"
+            done
+            echo -e "${GRAY}──────────────────────────────────────${NC}"
+            echo -e "  ${GRAY}1-9 toggle · n/p page · type+Enter filter · c clear filter · Enter done${NC}"
+            printf "  > "
+
+            local input
+            IFS= read -r input < /dev/tty
+            case "$input" in
+                "")  break;;                                  # done
+                n|N) page=$((page+1));;
+                p|P) page=$((page-1));;
+                c|C) filter="";;
+                [1-9])
+                    local sel=$((start + input - 1))
+                    if [ "$sel" -lt "$end" ]; then
+                        local name="${view[$sel]}"
+                        if [ -n "${picked[$name]}" ]; then unset 'picked[$name]'; else picked[$name]=1; fi
+                    fi
+                    ;;
+                *)   filter="$input"; page=0;;                # anything else = filter
+            esac
+        done
+
+        for l in "${!picked[@]}"; do SELECTED_LABELS+=("$l"); done
+    }
+
+    apply_labels() {
+        local pr_ref=$1; shift
+        [ $# -eq 0 ] && return
+        local args=()
+        local l
+        for l in "$@"; do args+=(--add-label "$l"); done
+        if gh pr edit "$pr_ref" "${args[@]}" >/dev/null 2>&1; then
+            bump_usage "$@"
+            echo -e "  ${GREEN}✔ Labels applied:${NC} $*"
+        else
+            echo -e "  ${YELLOW}Could not apply some labels.${NC}"
+        fi
+    }
+
+    # ---------- create flow ----------
+
+    create_pr() {
+        local branch=$(git rev-parse --abbrev-ref HEAD)
+        local commit_msg=$(git log -1 --pretty=%B | head -n1)
+        local pr_title="${TITLE:-$commit_msg}"
+        local prefix=$(get_ticket_prefix "$branch")
+        local ticket_url=$(get_ticket_url "$branch")
+        local template=$(get_pr_template)
+        local pr_body=$(render_template "$template" "$pr_title" "$ticket_url" "$branch" "$prefix")
+
+        echo -e "${CYAN}Creating draft PR...${NC}"
+        echo -e "  ${GRAY}Title: $pr_title${NC}"
+        [ -n "$ticket_url" ] && echo -e "  ${GRAY}Ticket: $ticket_url${NC}"
+        echo ""
+
+        if [ "$FORCE" != true ]; then
+            echo -e "${GRAY}PR body preview:${NC}"
+            echo -e "${GRAY}─────────────────────────────${NC}"
+            echo "$pr_body"
+            echo -e "${GRAY}─────────────────────────────${NC}"
+            echo ""
+            read -p "Create PR? [Y/edit title/n] " c < /dev/tty
+            case "$c" in
+                [nN]|[nN][oO]) echo -e "${YELLOW}PR skipped.${NC}"; return 1;;
+                [eE]*) read -p "Title: " nt < /dev/tty; [ -n "$nt" ] && pr_title="$nt";;
+            esac
+        fi
+
+        local base=${BASE:-$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")}
+        base=${base:-main}
+
+        if ! gh pr create --draft --title "$pr_title" --body "$pr_body" --base "$base" >/dev/null 2>&1; then
+            echo -e "${RED}✗ PR creation failed.${NC}"
+            echo -e "${GRAY}Create manually: gh pr create --draft${NC}"
+            return 1
+        fi
+        local pr_url=$(gh pr view --json url --jq '.url' 2>/dev/null)
+        echo -e "${GREEN}✔ Draft PR created: ${pr_url}${NC}"
+
+        # Optional label step
+        if [ "$NO_LABELS" != true ]; then
+            echo ""
+            local yn="y"
+            [ "$FORCE" != true ] && read -p "Add labels? [Y/n] " yn < /dev/tty
+            if [[ ! "$yn" =~ ^[nN] ]]; then
+                select_labels
+                if [ ${#SELECTED_LABELS[@]} -gt 0 ]; then
+                    apply_labels "$branch" "${SELECTED_LABELS[@]}"
+                fi
+            fi
+        fi
+    }
+
+    # ---------- list flow (legacy behavior) ----------
+
+    generate_compare_url() {
+        local base_branch="$1" head_branch="$2" remote_url repo_path
         remote_url=$(git config --get remote.origin.url)
         repo_path=$(echo "$remote_url" | sed -E "s#(git@github.com:|https://github.com/)([^.]+)(\.git)?#\2#")
         echo "https://github.com/$repo_path/compare/$base_branch...$head_branch?expand=1"
     }
 
-    get_base_branch() {
-        local base="$1"
-        if [ -z "$base" ]; then
-            gh repo view --json defaultBranchRef --jq .defaultBranchRef.name
+    list_prs() {
+        if [ "$LIST_ALL" = true ]; then
+            echo -e "${GREEN}All PRs authored by you:${NC}"
+            gh pr list --author "@me" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\""
+            return
+        fi
+        local branch=$(git rev-parse --abbrev-ref HEAD)
+        local prs=$(gh pr list --head "$branch" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\"")
+        if [ -n "$prs" ]; then
+            echo "$prs"
         else
-            echo "$base"
+            echo -e "${YELLOW}No PRs for '${branch}'.${NC}"
+            local default_branch=${BASE:-$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null)}
+            echo -e "Create one: ${CYAN}$(generate_compare_url "${default_branch:-main}" "$branch")${NC}"
         fi
     }
 
-    base=""
-    list_all="false"
+    # ---------- template setup ----------
+
+    setup_template() {
+        local current=$(git config --local --get pr.template 2>/dev/null)
+        [ -z "$current" ] && current=$(git config --global --get pr.template 2>/dev/null)
+        echo -e "${CYAN}git pr — template setup${NC}"
+        echo ""
+        if [ -n "$current" ]; then
+            echo -e "  ${GRAY}Current: $(echo -e "$current" | head -c 50)...${NC}"
+        else
+            echo -e "  ${GRAY}Current: (default minimal)${NC}"
+        fi
+        echo ""
+        echo -e "  ${GRAY}1)${NC} minimal       ${GRAY}Title + ticket. No prompts.${NC}"
+        echo -e "  ${GRAY}2)${NC} simple        ${GRAY}Correções (issue) + ticket${NC}"
+        echo -e "  ${GRAY}3)${NC} detailed      ${GRAY}Title + ticket + description + testing${NC}"
+        echo -e "  ${GRAY}4)${NC} changelog     ${GRAY}Type + changes + breaking + ticket${NC}"
+        echo -e "  ${GRAY}5)${NC} review        ${GRAY}Context + ticket + checklist${NC}"
+        echo -e "  ${GRAY}6)${NC} custom        ${GRAY}Enter your own template${NC}"
+        echo -e "  ${GRAY}7)${NC} reset         ${GRAY}Remove config (use default)${NC}"
+        echo ""
+        local choice; read -p "  Choose: " choice < /dev/tty
+        local tmpl=""
+        case "$choice" in
+            1|minimal)  tmpl='{title}\n\n{ticket}';;
+            2|simple)   tmpl='## Correções (issue)\n{ticket}';;
+            3|detailed) tmpl='## {title}\n\n### Atividades\n{ticket}\n\n### Descrição\n{{ask:"Descreva brevemente a mudança"}}\n\n### Testado?\n{{ask:-"Sim":"Foi testado manualmente?"}}';;
+            4|changelog) tmpl='## {title}\n\n### Tipo de mudança\n{{ask:-"feature":"Tipo (feature/bugfix/refactor/chore)?"}}\n\n### O que mudou?\n{{ask:"Descreva as alterações principais"}}\n\n### Breaking changes?\n{{ask:-"Nenhum":"Há breaking changes?"}}\n\n### Atividade\n{ticket}';;
+            5|review)   tmpl='## {title}\n\n### Contexto\n{{ask:"Contexto da mudança (por que foi feita?)"}}\n\n### Atividade\n{ticket}\n\n### Checklist\n- [ ] Código testado\n- [ ] Sem debug/log residual\n- [ ] {{ask:-"Não":"Migration necessária?"}}';;
+            6|custom)
+                echo ""
+                echo -e "  ${GRAY}Variables: {title} {ticket} {branch} {prefix}${NC}"
+                echo -e "  ${GRAY}Prompts:   {{ask:\"Question?\"}} {{ask:-\"default\":\"Question?\"}}${NC}"
+                echo -e "  ${GRAY}Use \\n for newlines.${NC}"
+                echo ""
+                read -p "  Template: " tmpl < /dev/tty
+                [ -z "$tmpl" ] && { echo -e "${YELLOW}Cancelled.${NC}"; return; }
+                ;;
+            7|reset)
+                git config --local --unset pr.template 2>/dev/null || true
+                git config --global --unset pr.template 2>/dev/null || true
+                echo -e "${GREEN}✔ Template reset to default (minimal).${NC}"
+                return
+                ;;
+            *) echo -e "${YELLOW}Cancelled.${NC}"; return;;
+        esac
+        echo ""
+        local scope_choice; read -p "  Apply globally or locally? [g/L] " scope_choice < /dev/tty
+        case "$scope_choice" in
+            [gG]|global) git config --global pr.template "$tmpl"; echo -e "${GREEN}✔ Template set globally.${NC}";;
+            *)           git config --local pr.template "$tmpl"; echo -e "${GREEN}✔ Template set for this repo.${NC}";;
+        esac
+    }
+
+    # ---------- args ----------
+
+    CMD="auto"
+    TITLE=""; BASE=""; LIST_ALL=false; NO_LABELS=false; FORCE=false
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            -h|--help)
-                show_help
-                exit 0
-                ;;
-            -v|--version)
-                echo "git pr v$VERSION"
-                exit 0
-                ;;
-            -b)
-                base="$2"
-                shift 2
-                ;;
-            -a|--all)
-                list_all="true"
-                shift
-                ;;
-            *)
-                echo -e "${RED}Error: Unknown option '$1'${NC}"
-                echo "Use 'git pr --help' for usage information."
-                exit 1
-                ;;
+            -h|--help)     show_help; exit 0;;
+            -v|--version)  echo "git pr v$VERSION"; exit 0;;
+            create)        CMD="create"; shift;;
+            setup|--setup) CMD="setup"; shift;;
+            -a|--all)      LIST_ALL=true; CMD="list"; shift;;
+            -t|--title)    TITLE="$2"; shift 2;;
+            -b|--base)     BASE="$2"; shift 2;;
+            --no-labels)   NO_LABELS=true; shift;;
+            -f|--force)    FORCE=true; shift;;
+            *)             echo -e "${RED}Unknown: $1${NC}"; show_help; exit 1;;
         esac
     done
 
     if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-        echo -e "${RED}Error: Not in a git repository.${NC}"
-        exit 1
+        echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
     fi
+
+    # setup only needs git config, not gh
+    if [ "$CMD" = setup ]; then setup_template; exit 0; fi
 
     if ! command -v gh > /dev/null 2>&1; then
-        echo -e "${RED}Error: GitHub CLI (gh) is not installed.${NC}"
+        echo -e "${YELLOW}GitHub CLI (gh) not installed — skipping.${NC}"
         echo -e "Install it from: ${CYAN}https://cli.github.com/${NC}"
-        exit 1
-    fi
-
-    if [ "$list_all" = "true" ]; then
-        echo -e "${GREEN}Listing all PRs authored by you:${NC}"
-        gh pr list --author "@me" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\""
         exit 0
     fi
 
-    branch=$(git rev-parse --abbrev-ref HEAD)
-    prs=$(gh pr list --head "$branch" --json title,url,state --jq ".[] | \"\(.state): \(.title) -> \(.url)\"")
-
-    if [ -n "$prs" ]; then
-        echo "$prs"
-        open_prs=$(gh pr list --head "$branch" --state open --json number --jq ". | length")
-        if [ "$open_prs" -eq 0 ]; then
-            echo ""
-            echo -e "${YELLOW}No open PRs found. Create a new one:${NC}"
-            default_branch=$(get_base_branch "$base")
-            echo -e "${CYAN}$(generate_compare_url "$default_branch" "$branch")${NC}"
-        fi
-    else
-        echo -e "${YELLOW}No pull requests found for branch '${branch}'.${NC}"
-        echo -e "Create a new pull request:"
-        default_branch=$(get_base_branch "$base")
-        echo -e "${CYAN}$(generate_compare_url "$default_branch" "$branch")${NC}"
-    fi
+    case "$CMD" in
+        create) create_pr;;
+        list)   list_prs;;
+        auto)   list_prs;;
+    esac
 EOF
 )
 

@@ -14,8 +14,8 @@
     },
     {
       "name": "marry",
-      "version": "1.4.0",
-      "description": "Create branch, commit, push, and open PR — guided mode and diff browser with include/drop/unstage"
+      "version": "1.5.0",
+      "description": "Create branch, commit, push, and open PR — guided mode, diff browser, delegates PR to the pr extension"
     },
     {
       "name": "torch",
@@ -54,8 +54,8 @@
     },
     {
       "name": "pr",
-      "version": "1.0.0",
-      "description": "Show or create pull request for the current branch"
+      "version": "2.0.0",
+      "description": "Create/list PRs — template body and interactive label multi-select"
     },
     {
       "name": "wip",

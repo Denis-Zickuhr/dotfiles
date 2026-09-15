@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.4.0"
+    VERSION="1.5.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -694,11 +694,17 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             git quiver -a "$BRANCH_NAME" >/dev/null 2>&1
         fi
 
-        # Create PR
-        if [ "$NO_PR" != true ] && command -v gh > /dev/null 2>&1; then
-            create_pr "$commit_msg"
-        elif [ "$NO_PR" != true ]; then
-            echo -e "${GRAY}(gh CLI not installed — skipping PR creation)${NC}"
+        # Create PR — delegate to the `pr` extension when available (it owns the
+        # PR flow: template, labels, etc). Fall back to the built-in creator.
+        if [ "$NO_PR" != true ]; then
+            if git config --global --get alias.pr > /dev/null 2>&1; then
+                echo ""
+                git pr create
+            elif command -v gh > /dev/null 2>&1; then
+                create_pr "$commit_msg"
+            else
+                echo -e "${GRAY}(gh CLI not installed — skipping PR creation)${NC}"
+            fi
         fi
 
         echo ""
