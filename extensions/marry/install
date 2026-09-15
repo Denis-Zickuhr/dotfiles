@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.2.0"
+    VERSION="1.3.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -10,11 +10,12 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "Create branch, commit, push, and open PR in one flow."
         echo ""
         echo -e "${YELLOW}Usage:${NC}"
+        echo "  git marry                        Guided mode — asks for what's missing"
         echo "  git marry -b <branch-name>"
         echo "  git marry -b <branch-name> -a -m \"custom message\""
         echo ""
         echo -e "${YELLOW}Options:${NC}"
-        echo "  -b, --branch <name>     New branch name (required)"
+        echo "  -b, --branch <name>     New branch name (asked in guided mode if omitted)"
         echo "  -a, --auto-add          Stage all changes (git add -u) instead of pattern"
         echo "  -p, --pattern <path>    File patterns to add (default: src)"
         echo "  -m, --message <msg>     Custom commit message (overrides cbn)"
@@ -22,6 +23,16 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "  --no-pr                 Skip PR creation"
         echo "  -h, --help              Show help"
         echo "  -v, --version           Show version"
+        echo ""
+        echo -e "${YELLOW}Guided mode:${NC}"
+        echo "  Running 'git marry' with no branch prompts for what's missing:"
+        echo "  branch name, scope (optional), and file paths (comma-separated,"
+        echo "  with a live preview of what will be included)."
+        echo "  Each topic is toggleable; anything passed on the CLI is not re-asked."
+        echo "    git config marry.guided false            Disable guided entirely"
+        echo "    git config marry.guided.branch false     Don't ask branch name"
+        echo "    git config marry.guided.scope false      Don't ask scope"
+        echo "    git config marry.guided.pattern false    Don't ask paths"
         echo ""
         echo -e "${YELLOW}PR Template:${NC}"
         echo "  Configure via git config:"
@@ -232,6 +243,60 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         git stash pop >/dev/null 2>&1
 
         echo -e "${GREEN}✓ Back on ${ORIGINAL_BRANCH} with your changes restored.${NC}"
+    }
+
+    # --- Guided mode ---
+
+    # Read a boolean git config, defaulting to true when unset.
+    # Any of: false/0/no/off  -> disabled. Everything else -> enabled.
+    cfg_bool() {
+        local key=$1
+        local val=$(git config --get "$key" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+        case "$val" in
+            false|0|no|off) return 1;;
+            *)              return 0;;
+        esac
+    }
+
+    # Interactively ask for whatever wasn't provided on the command line.
+    # Each topic is individually toggleable; marry.guided is the master switch.
+    run_guided() {
+        echo -e "${CYAN}git marry — guided${NC}"
+        echo ""
+
+        # 1. Branch name (only if missing)
+        if [ -z "$BRANCH_NAME" ] && cfg_bool marry.guided.branch; then
+            while [ -z "$BRANCH_NAME" ]; do
+                read -p "  Branch name: " BRANCH_NAME < /dev/tty
+                [ -z "$BRANCH_NAME" ] && echo -e "  ${YELLOW}Branch name is required.${NC}"
+            done
+        fi
+
+        # 2. Scope (optional even when enabled; Enter = none)
+        if [ -z "$SCOPE" ] && cfg_bool marry.guided.scope; then
+            read -p "  Scope (optional, Enter to skip): " SCOPE < /dev/tty
+        fi
+
+        # 3. File patterns — comma-separated paths with a live-updating preview.
+        if [ -z "$ADD_PATTERNS" ] && [ "$AUTO_ADD" = false ] && cfg_bool marry.guided.pattern; then
+            echo ""
+            echo -e "  ${GRAY}Paths to include, comma-separated (Enter for default 'src').${NC}"
+            local raw
+            read -p "  Paths: " raw < /dev/tty
+            if [ -n "$raw" ]; then
+                # Split on commas, trim, and echo the accumulating list.
+                local list=""
+                local IFS=','
+                for p in $raw; do
+                    p=$(echo "$p" | sed 's/^ *//;s/ *$//')
+                    [ -z "$p" ] && continue
+                    ADD_PATTERNS="$ADD_PATTERNS $p"
+                    list="${list:+$list, }$p"
+                    echo -e "    ${GREEN}will include:${NC} ${CYAN}$list${NC}"
+                done
+            fi
+        fi
+        echo ""
     }
 
     # --- Main flow ---
@@ -727,6 +792,13 @@ SCRIPT_CONTENT=$(cat <<'EOF'
                 show_help; exit 1;;
         esac
     done
+
+    # Guided mode (master switch marry.guided, default on). Asks for whatever
+    # was not supplied on the command line. Disable with:
+    #   git config marry.guided false
+    if cfg_bool marry.guided; then
+        run_guided
+    fi
 
     [ -z "$BRANCH_NAME" ] && { echo -e "${RED}Branch name required. Use -b <name>${NC}"; exit 1; }
     [ -z "$ADD_PATTERNS" ] && [ "$AUTO_ADD" = false ] && ADD_PATTERNS="src"
