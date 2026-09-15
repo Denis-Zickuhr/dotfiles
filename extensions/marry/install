@@ -25,14 +25,10 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "  -v, --version           Show version"
         echo ""
         echo -e "${YELLOW}Guided mode:${NC}"
-        echo "  Running 'git marry' with no branch prompts for what's missing:"
-        echo "  branch name, scope (optional), and file paths (comma-separated,"
-        echo "  with a live preview of what will be included)."
-        echo "  Each topic is toggleable; anything passed on the CLI is not re-asked."
-        echo "    git config marry.guided false            Disable guided entirely"
-        echo "    git config marry.guided.branch false     Don't ask branch name"
-        echo "    git config marry.guided.scope false      Don't ask scope"
-        echo "    git config marry.guided.pattern false    Don't ask paths"
+        echo "  Running 'git marry' with no branch just asks for the branch name."
+        echo "  Scope and file paths are not asked — they default (no scope,"
+        echo "  paths 'src') and can be refined on the review screen."
+        echo "    git config marry.guided false    Disable guided (require -b)"
         echo ""
         echo -e "${YELLOW}PR Template:${NC}"
         echo "  Configure via git config:"
@@ -258,45 +254,18 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         esac
     }
 
-    # Interactively ask for whatever wasn't provided on the command line.
-    # Each topic is individually toggleable; marry.guided is the master switch.
+    # If no branch was given, ask for it. Scope and paths are intentionally not
+    # asked here — they default (no scope, paths='src') and can be refined on the
+    # review screen. marry.guided is the master switch.
     run_guided() {
-        echo -e "${CYAN}git marry — guided${NC}"
-        echo ""
-
-        # 1. Branch name (only if missing)
-        if [ -z "$BRANCH_NAME" ] && cfg_bool marry.guided.branch; then
+        if [ -z "$BRANCH_NAME" ]; then
+            echo -e "${CYAN}git marry — guided${NC}"
             while [ -z "$BRANCH_NAME" ]; do
                 read -p "  Branch name: " BRANCH_NAME < /dev/tty
                 [ -z "$BRANCH_NAME" ] && echo -e "  ${YELLOW}Branch name is required.${NC}"
             done
-        fi
-
-        # 2. Scope (optional even when enabled; Enter = none)
-        if [ -z "$SCOPE" ] && cfg_bool marry.guided.scope; then
-            read -p "  Scope (optional, Enter to skip): " SCOPE < /dev/tty
-        fi
-
-        # 3. File patterns — comma-separated paths with a live-updating preview.
-        if [ -z "$ADD_PATTERNS" ] && [ "$AUTO_ADD" = false ] && cfg_bool marry.guided.pattern; then
             echo ""
-            echo -e "  ${GRAY}Paths to include, comma-separated (Enter for default 'src').${NC}"
-            local raw
-            read -p "  Paths: " raw < /dev/tty
-            if [ -n "$raw" ]; then
-                # Split on commas, trim, and echo the accumulating list.
-                local list=""
-                local IFS=','
-                for p in $raw; do
-                    p=$(echo "$p" | sed 's/^ *//;s/ *$//')
-                    [ -z "$p" ] && continue
-                    ADD_PATTERNS="$ADD_PATTERNS $p"
-                    list="${list:+$list, }$p"
-                    echo -e "    ${GREEN}will include:${NC} ${CYAN}$list${NC}"
-                done
-            fi
         fi
-        echo ""
     }
 
     # --- Main flow ---
