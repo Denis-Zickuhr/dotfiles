@@ -259,7 +259,17 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     # review screen. marry.guided is the master switch.
     run_guided() {
         if [ -z "$BRANCH_NAME" ]; then
-            echo -e "${CYAN}git marry — guided${NC}"
+            # Summary of pending changes (guided runs before the stash).
+            local changed=$(git status --short 2>/dev/null)
+            if [ -n "$changed" ]; then
+                local count=$(printf '%s\n' "$changed" | grep -c .)
+                echo -e "${GRAY}Changes to include (${count}):${NC}"
+                printf '%s\n' "$changed" | sed 's/^/  /'
+                echo ""
+            else
+                echo -e "${YELLOW}No local changes.${NC}"
+                echo ""
+            fi
             while [ -z "$BRANCH_NAME" ]; do
                 read -p "  Branch name: " BRANCH_NAME < /dev/tty
                 [ -z "$BRANCH_NAME" ] && echo -e "  ${YELLOW}Branch name is required.${NC}"
