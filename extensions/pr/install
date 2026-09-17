@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="2.0.0"
+    VERSION="2.0.1"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -9,7 +9,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo ""
         echo -e "${YELLOW}Usage:${NC}"
         echo "  git pr                 Show/create PR for the current branch"
-        echo "  git pr create          Create a draft PR (template + optional labels)"
+        echo "  git pr create          Create a PR (template + optional labels)"
         echo "  git pr -a, --all       List all PRs authored by you"
         echo ""
         echo -e "${YELLOW}Options:${NC}"
@@ -129,7 +129,9 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         grep -F -- "	$1" "$f" 2>/dev/null | head -1 | cut -f1
     }
 
-    # ---------- label multi-select (paging + type-to-filter + most-used) ----------
+    # ---------- label multi-select (fullscreen picker, nav-style) ----------
+    # Fullscreen UI: ↑/↓ or j/k move, ←/→ or h/l page, Space toggles,
+    # type to filter, Enter confirms, Esc/Ctrl-C cancels. Most-used first.
     # Populates the global SELECTED_LABELS array.
     select_labels() {
         SELECTED_LABELS=()
@@ -143,71 +145,143 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         fi
 
         # Sort by local usage desc, then name asc.
-        local -a sorted=()
-        while IFS= read -r l; do sorted+=("$l"); done < <(
+        local -a items=()
+        while IFS= read -r l; do items+=("$l"); done < <(
             for l in "${all[@]}"; do
                 printf '%s\t%s\n' "$(usage_count "$l" 2>/dev/null || echo 0)" "$l"
             done | sort -t$'\t' -k1,1nr -k2,2 | cut -f2
         )
 
+        if [ ! -t 0 ] || [ ! -t 1 ]; then
+            echo -e "  ${YELLOW}Label picker needs a terminal — skipping.${NC}"
+            return
+        fi
+
         local -A picked=()
-        local filter="" page=0 per=8
-        while true; do
-            # Apply filter (in-memory, case-insensitive substring).
-            local -a view=()
-            local l
-            for l in "${sorted[@]}"; do
-                if [ -z "$filter" ] || echo "$l" | grep -qi -- "$filter"; then
-                    view+=("$l")
-                fi
-            done
-            local n=${#view[@]}
-            local pages=$(( (n + per - 1) / per )); [ "$pages" -eq 0 ] && pages=1
-            [ "$page" -ge "$pages" ] && page=$((pages-1))
-            [ "$page" -lt 0 ] && page=0
-            local start=$((page*per)) end=$((page*per+per))
-            [ "$end" -gt "$n" ] && end=$n
+        local query="" sel=0 editing=0 page_size=10
+        local -a view=()
 
-            clear
-            echo -e "${GRAY}──────────────────────────────────────${NC}"
-            echo -e "  ${CYAN}Select labels${NC}   ${GRAY}filter:${NC} ${filter:-${GRAY}(none)${NC}}   ${GRAY}page $((page+1))/$pages${NC}"
-            echo -e "${GRAY}──────────────────────────────────────${NC}"
-            if [ "$n" -eq 0 ]; then
-                echo -e "  ${GRAY}(no match)${NC}"
+        _lbl_filter() {
+            view=()
+            local it
+            if [ -z "$query" ]; then
+                view=("${items[@]}")
+            else
+                local q="${query,,}"
+                for it in "${items[@]}"; do
+                    [[ "${it,,}" == *"$q"* ]] && view+=("$it")
+                done
             fi
-            local i
-            for ((i=start; i<end; i++)); do
-                local name="${view[$i]}"
-                local mark="  "
-                [ -n "${picked[$name]}" ] && mark="${GREEN}✔${NC} "
-                local u=$(usage_count "$name" 2>/dev/null); u=${u:-0}
-                local hint=""
-                [ "$u" -gt 0 ] && hint=" ${GRAY}(${u})${NC}"
-                printf "   %b %d) %s%b\n" "$mark" "$((i-start+1))" "$name" "$hint"
-            done
-            echo -e "${GRAY}──────────────────────────────────────${NC}"
-            echo -e "  ${GRAY}1-9 toggle · n/p page · type+Enter filter · c clear filter · Enter done${NC}"
-            printf "  > "
+            local count=${#view[@]}
+            if [ "$count" -eq 0 ]; then sel=0
+            elif [ "$sel" -ge "$count" ]; then sel=$((count-1)); fi
+        }
 
-            local input
-            IFS= read -r input < /dev/tty
-            case "$input" in
-                "")  break;;                                  # done
-                n|N) page=$((page+1));;
-                p|P) page=$((page-1));;
-                c|C) filter="";;
-                [1-9])
-                    local sel=$((start + input - 1))
-                    if [ "$sel" -lt "$end" ]; then
-                        local name="${view[$sel]}"
-                        if [ -n "${picked[$name]}" ]; then unset 'picked[$name]'; else picked[$name]=1; fi
+        _lbl_render() {
+            local count=${#view[@]}
+            local total_pages=$(( (count + page_size - 1) / page_size ))
+            [ "$total_pages" -lt 1 ] && total_pages=1
+            local page=0; [ "$page_size" -gt 0 ] && page=$((sel / page_size))
+            local start=$((page*page_size)) end=$((page*page_size+page_size-1))
+            [ "$end" -gt $((count-1)) ] && end=$((count-1))
+
+            local hint="(type to search, / to force)"
+            [ "$editing" = 1 ] && hint="(editing — j/k/h/l typed literally)"
+
+            printf '\033[H\033[J'
+            printf '  \033[1mLabels\033[0m \033[2m— %d total, %d shown, %d selected\033[0m\n\n' \
+                "${#items[@]}" "$count" "${#picked[@]}"
+            printf '  Search: %s\033[7m \033[0m  \033[2m%s\033[0m\n\n' "$query" "$hint"
+            if [ "$count" -eq 0 ]; then
+                printf '    No matches.\n'
+            else
+                local i name mark u hint2
+                for (( i=start; i<=end; i++ )); do
+                    name="${view[$i]}"
+                    mark="[ ]"; [ -n "${picked[$name]}" ] && mark="[\033[32m✔\033[0m]"
+                    u=$(usage_count "$name" 2>/dev/null); u=${u:-0}
+                    hint2=""; [ "$u" -gt 0 ] && hint2=" \033[2m(${u})\033[0m"
+                    if [ "$i" -eq "$sel" ]; then
+                        printf '  \033[7m› %b %s\033[0m%b\n' "$mark" "$name" "$hint2"
+                    else
+                        printf '    %b %s%b\n' "$mark" "$name" "$hint2"
                     fi
-                    ;;
-                *)   filter="$input"; page=0;;                # anything else = filter
-            esac
+                done
+            fi
+            printf '\n  Page %d/%d   \033[2m↑/↓ move · ←/→ page · Space select · Enter confirm · Esc cancel\033[0m\n' \
+                "$((page+1))" "$total_pages"
+        }
+
+        _lbl_move() {
+            local count=${#view[@]}; [ "$count" -eq 0 ] && return
+            sel=$((sel + $1))
+            if [ "$sel" -lt 0 ]; then sel=$((count-1))
+            elif [ "$sel" -ge "$count" ]; then sel=0; fi
+        }
+        _lbl_page() {
+            local count=${#view[@]}; [ "$count" -eq 0 ] && return
+            sel=$((sel + $1*page_size))
+            if [ "$sel" -lt 0 ]; then sel=0
+            elif [ "$sel" -gt $((count-1)) ]; then sel=$((count-1)); fi
+        }
+
+        _lbl_filter
+
+        local old_stty=""; old_stty=$(stty -g 2>/dev/null)
+        _lbl_cleanup() { [ -n "$old_stty" ] && stty "$old_stty" 2>/dev/null; tput cnorm 2>/dev/null; printf '\033[H\033[J'; }
+        trap '_lbl_cleanup; trap - RETURN INT' RETURN INT
+        stty -echo -icanon min 1 time 0 2>/dev/null
+        tput civis 2>/dev/null
+
+        local confirmed=0
+        while true; do
+            _lbl_render
+            local key="" k2="" k3=""
+            IFS= read -rsn1 key || break
+            if [ "$key" = $'\x1b' ]; then
+                IFS= read -rsn1 -t 0.05 k2
+                if [ "$k2" = '[' ]; then
+                    IFS= read -rsn1 -t 0.05 k3
+                    case "$k3" in
+                        A) _lbl_move -1;; B) _lbl_move 1;;
+                        D) _lbl_page -1;; C) _lbl_page 1;;
+                    esac
+                elif [ -n "$query" ]; then
+                    query=""; editing=0; _lbl_filter
+                else
+                    break   # Esc cancels
+                fi
+            elif [ -z "$key" ]; then
+                confirmed=1; break   # Enter confirms
+            elif [ "$key" = ' ' ]; then
+                if [ ${#view[@]} -gt 0 ]; then
+                    local name="${view[$sel]}"
+                    if [ -n "${picked[$name]}" ]; then unset 'picked[$name]'; else picked[$name]=1; fi
+                fi
+            elif [ "$key" = $'\x7f' ] || [ "$key" = $'\x08' ]; then
+                if [ -n "$query" ]; then query="${query%?}"; [ -z "$query" ] && editing=0; _lbl_filter; fi
+            elif [ "$key" = $'\x03' ]; then
+                break   # Ctrl-C cancels
+            elif [ "$key" = '/' ] && [ "$editing" = 0 ]; then
+                editing=1
+            else
+                case "$key" in
+                    j) if [ "$editing" = 0 ]; then _lbl_move 1; else query+="$key"; _lbl_filter; fi;;
+                    k) if [ "$editing" = 0 ]; then _lbl_move -1; else query+="$key"; _lbl_filter; fi;;
+                    h) if [ "$editing" = 0 ]; then _lbl_page -1; else query+="$key"; _lbl_filter; fi;;
+                    l) if [ "$editing" = 0 ]; then _lbl_page 1; else query+="$key"; _lbl_filter; fi;;
+                    *) editing=1; query+="$key"; _lbl_filter;;
+                esac
+            fi
         done
 
-        for l in "${!picked[@]}"; do SELECTED_LABELS+=("$l"); done
+        _lbl_cleanup
+        trap - RETURN INT 2>/dev/null
+
+        if [ "$confirmed" = 1 ]; then
+            local l
+            for l in "${!picked[@]}"; do SELECTED_LABELS+=("$l"); done
+        fi
     }
 
     apply_labels() {
@@ -235,7 +309,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local template=$(get_pr_template)
         local pr_body=$(render_template "$template" "$pr_title" "$ticket_url" "$branch" "$prefix")
 
-        echo -e "${CYAN}Creating draft PR...${NC}"
+        echo -e "${CYAN}Creating PR...${NC}"
         echo -e "  ${GRAY}Title: $pr_title${NC}"
         [ -n "$ticket_url" ] && echo -e "  ${GRAY}Ticket: $ticket_url${NC}"
         echo ""
@@ -256,13 +330,13 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local base=${BASE:-$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")}
         base=${base:-main}
 
-        if ! gh pr create --draft --title "$pr_title" --body "$pr_body" --base "$base" >/dev/null 2>&1; then
+        if ! gh pr create --title "$pr_title" --body "$pr_body" --base "$base" >/dev/null 2>&1; then
             echo -e "${RED}✗ PR creation failed.${NC}"
-            echo -e "${GRAY}Create manually: gh pr create --draft${NC}"
+            echo -e "${GRAY}Create manually: gh pr create${NC}"
             return 1
         fi
         local pr_url=$(gh pr view --json url --jq '.url' 2>/dev/null)
-        echo -e "${GREEN}✔ Draft PR created: ${pr_url}${NC}"
+        echo -e "${GREEN}✔ PR created: ${pr_url}${NC}"
 
         # Optional label step
         if [ "$NO_LABELS" != true ]; then
