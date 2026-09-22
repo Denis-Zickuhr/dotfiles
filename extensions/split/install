@@ -9,6 +9,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     BASE_BRANCH=""
     FORCE_PUSH=false
     NO_PR=false
+    YES=false
     DRY_RUN=false
     START_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
     COMMITS_RAW=()
@@ -32,6 +33,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo -e "${YELLOW}Options:${NC}"
         echo "  -b, --base <branch>   Base branch for fork point and PR (default: repo default)"
         echo "  --no-pr               Skip PR creation (branches only)"
+        echo "  -y, --yes             Don't ask per branch — open a PR for every branch"
         echo "  --force               Force push created branches"
         echo "  -n, --dry-run         Show what would happen, make no changes"
         echo "  -h, --help            Show this help"
@@ -44,8 +46,8 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo -e "${YELLOW}Flow:${NC}"
         echo "  1. Detects commits unique to <branch> vs base"
         echo "  2. For each commit, derives a branch name from its message"
-        echo "  3. Creates the branch off base, cherry-picks the single commit"
-        echo "  4. Pushes and (if gh is available) opens a PR"
+        echo "  3. Creates each branch off base, cherry-picks the single commit, pushes"
+        echo "  4. Then asks — per branch — whether to open a PR (if gh is available)"
         exit 0
     }
 
@@ -113,6 +115,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
                 -v|--version) echo "git split v$VERSION"; exit 0 ;;
                 -b|--base)    BASE_BRANCH="$2"; shift 2; continue ;;
                 --no-pr)      NO_PR=true ;;
+                -y|--yes)     YES=true ;;
                 --force)      FORCE_PUSH=true ;;
                 -n|--dry-run) DRY_RUN=true ;;
                 -*)           error "Unknown option: $1"; show_help ;;
@@ -197,11 +200,10 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             exit 0
         fi
 
-        local mode="push + PR"
-        [ "$NO_PR" = true ] && mode="push only"
-        ! command -v gh > /dev/null 2>&1 && mode="push only (gh not installed)"
+        local mode="push"
+        [ "$FORCE_PUSH" = true ] && mode="force-push"
 
-        printf "Create %d branches and %s? [Y/n] " "${#COMMITS_RAW[@]}" "$mode"
+        printf "Create and %s %d branches? [Y/n] " "$mode" "${#COMMITS_RAW[@]}"
         read -r confirm < /dev/tty
         case "$confirm" in
             [nN][oO]|[nN]) echo -e "${YELLOW}Cancelled.${NC}"; exit 0 ;;
@@ -293,21 +295,36 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
             # Done with this branch's worktree.
             git worktree remove --force "$WORKTREE_DIR" &> /dev/null
+            echo -e "  ${GREEN}✓${NC} pushed ${GREEN}$branch${NC}"
 
+            # Ask about a PR for THIS branch, individually.
             if [ "$NO_PR" != true ] && [ "$has_gh" = true ]; then
-                if gh pr create --title "$msg" --body "$msg" --base "$BASE_BRANCH" --head "$branch" > /dev/null 2>&1; then
-                    local url=$(gh pr view "$branch" --json url --jq '.url' 2>/dev/null)
-                    PR_LINKS+=("$url")
-                    echo -e "  ${GREEN}✓${NC} $branch → PR: ${CYAN}${url}${NC}"
-                else
-                    local link=$(generate_pr_link "$BASE_BRANCH" "$branch")
-                    PR_LINKS+=("$link")
-                    echo -e "  ${GREEN}✓${NC} $branch pushed — open PR: ${CYAN}${link}${NC}"
+                local yn="y"
+                if [ "$YES" != true ]; then
+                    printf "    Open PR for %s? [Y/n] " "$branch"
+                    read -r yn < /dev/tty
                 fi
+                case "$yn" in
+                    [nN][oO]|[nN])
+                        local link=$(generate_pr_link "$BASE_BRANCH" "$branch")
+                        echo -e "    ${GRAY}skipped — open manually: ${link}${NC}"
+                        ;;
+                    *)
+                        if gh pr create --title "$msg" --body "$msg" --base "$BASE_BRANCH" --head "$branch" > /dev/null 2>&1; then
+                            local url=$(gh pr view "$branch" --json url --jq '.url' 2>/dev/null)
+                            PR_LINKS+=("$url")
+                            echo -e "    ${GREEN}→ PR:${NC} ${CYAN}${url}${NC}"
+                        else
+                            local link=$(generate_pr_link "$BASE_BRANCH" "$branch")
+                            PR_LINKS+=("$link")
+                            echo -e "    ${YELLOW}PR create failed — open manually:${NC} ${CYAN}${link}${NC}"
+                        fi
+                        ;;
+                esac
             else
                 local link=$(generate_pr_link "$BASE_BRANCH" "$branch")
                 PR_LINKS+=("$link")
-                echo -e "  ${GREEN}✓${NC} $branch pushed — open PR: ${CYAN}${link}${NC}"
+                echo -e "    ${GRAY}PR link: ${link}${NC}"
             fi
         done
     }

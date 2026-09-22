@@ -23,6 +23,7 @@ git split <branch> [options]
 |------|-------------|
 | `-b`, `--base <branch>` | Base branch for fork point and PR (default: repo default) |
 | `--no-pr` | Skip PR creation (branches only) |
+| `-y`, `--yes` | Don't ask per branch — open a PR for every branch |
 | `--force` | Force push created branches |
 | `-n`, `--dry-run` | Show what would happen, make no changes |
 | `-h`, `--help` | Show help |
@@ -62,8 +63,9 @@ git split v1.0.0 --dry-run
 
 1. Detects commits unique to `<branch>` relative to the base (via merge-base).
 2. Derives a branch name from each commit message (reverse cbn).
-3. Creates each branch off the base and cherry-picks the single commit.
-4. Pushes and opens a PR (title/body = commit subject) when `gh` is available.
+3. Creates each branch off the base, cherry-picks the single commit, and pushes.
+4. Then, per branch, asks whether to open a PR (title/body = commit subject)
+   when `gh` is available. Use `-y` to skip the prompt and open all PRs.
 
 On any failure (checkout, cherry-pick conflict, push), it rolls back: deletes
 the local branches it created, returns you to your starting branch, and lists
