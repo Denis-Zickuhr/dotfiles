@@ -14,6 +14,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     COMMITS_RAW=()
     CREATED_BRANCHES=()
     PR_LINKS=()
+    WORKTREE_DIR=""
 
     CT="feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert"
 
@@ -209,7 +210,11 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     rollback() {
         echo -e "\n${YELLOW}Rolling back...${NC}"
-        [ -n "$START_BRANCH" ] && git checkout "$START_BRANCH" &> /dev/null
+
+        # Clean up any leftover worktree.
+        if [ -n "$WORKTREE_DIR" ] && [ -e "$WORKTREE_DIR" ]; then
+            git worktree remove --force "$WORKTREE_DIR" &> /dev/null
+        fi
 
         local pushed=()
         for b in "${CREATED_BRANCHES[@]}"; do
@@ -227,6 +232,8 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     unique_branch_name() {
         local base_name="$1" name="$1" n=2
+        # Never reuse the source branch's own name.
+        [ "$name" = "$SOURCE_BRANCH" ] && { name="${base_name}-split"; base_name="$name"; }
         while git show-ref --verify --quiet "refs/heads/$name" \
             || git ls-remote --heads origin "$name" 2>/dev/null | grep -q "refs/heads/$name$"; do
             name="${base_name}-${n}"
@@ -236,11 +243,22 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     }
 
     process_commits() {
+        # Resolve base_ref the same way collect_commits did, so the cherry-pick
+        # lands on the exact commit the fork point was computed against.
         local base_ref="$BASE_BRANCH"
-        git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH" && base_ref="origin/$BASE_BRANCH"
+        if git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
+            base_ref="origin/$BASE_BRANCH"
+        fi
 
         local has_gh=false
         command -v gh > /dev/null 2>&1 && has_gh=true
+
+        # Each commit becomes an independent branch off base_ref. We do the
+        # cherry-pick inside a throwaway worktree so it is immune to the state
+        # of the caller's working tree (dirty files, wrong current branch,
+        # stale local base), which is what caused spurious conflicts.
+        WORKTREE_DIR=$(mktemp -d 2>/dev/null || echo "/tmp/git-split-$$")
+        rm -rf "$WORKTREE_DIR"
 
         local line hash msg branch
         for line in "${COMMITS_RAW[@]}"; do
@@ -251,22 +269,30 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
             log "Commit ${hash:0:7} → $branch"
 
-            if ! git checkout -b "$branch" "$base_ref" > /dev/null 2>&1; then
-                error "Branch creation failed for $branch"; rollback
+            # Fresh worktree pinned to base_ref, on the new branch.
+            if ! git worktree add -q -b "$branch" "$WORKTREE_DIR" "$base_ref" > /dev/null 2>&1; then
+                error "Worktree/branch creation failed for $branch"; rollback
             fi
             CREATED_BRANCHES+=("$branch")
 
-            if ! git cherry-pick "$hash" > /dev/null 2>&1; then
-                error "Conflict cherry-picking ${hash:0:7} onto $branch."
-                git cherry-pick --abort &> /dev/null
+            if ! git -C "$WORKTREE_DIR" cherry-pick "$hash" > /dev/null 2>&1; then
+                error "Conflict cherry-picking ${hash:0:7} onto $base_ref."
+                echo -e "  ${GRAY}The commit does not apply cleanly on '$BASE_BRANCH'.${NC}"
+                git -C "$WORKTREE_DIR" cherry-pick --abort &> /dev/null
+                git worktree remove --force "$WORKTREE_DIR" &> /dev/null
                 rollback
             fi
 
             local push_args="-u origin $branch"
             [ "$FORCE_PUSH" = true ] && push_args="--force $push_args"
-            if ! git push $push_args &> /dev/null; then
-                error "Push failed for $branch"; rollback
+            if ! git -C "$WORKTREE_DIR" push $push_args &> /dev/null; then
+                error "Push failed for $branch"
+                git worktree remove --force "$WORKTREE_DIR" &> /dev/null
+                rollback
             fi
+
+            # Done with this branch's worktree.
+            git worktree remove --force "$WORKTREE_DIR" &> /dev/null
 
             if [ "$NO_PR" != true ] && [ "$has_gh" = true ]; then
                 if gh pr create --title "$msg" --body "$msg" --base "$BASE_BRANCH" --head "$branch" > /dev/null 2>&1; then
@@ -287,7 +313,6 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     }
 
     finish_execution() {
-        [ -n "$START_BRANCH" ] && git checkout "$START_BRANCH" > /dev/null 2>&1
         echo ""
         echo -e "${GREEN}Done.${NC} Created ${#CREATED_BRANCHES[@]} branches:"
         for b in "${CREATED_BRANCHES[@]}"; do echo -e "  ${GRAY}•${NC} $b"; done
