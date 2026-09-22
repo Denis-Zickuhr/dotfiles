@@ -287,8 +287,10 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
             local push_args="-u origin $branch"
             [ "$FORCE_PUSH" = true ] && push_args="--force $push_args"
-            if ! git -C "$WORKTREE_DIR" push $push_args &> /dev/null; then
+            local push_err
+            if ! push_err=$(git -C "$WORKTREE_DIR" push $push_args 2>&1); then
                 error "Push failed for $branch"
+                echo "$push_err" | sed 's/^/    /'
                 git worktree remove --force "$WORKTREE_DIR" &> /dev/null
                 rollback
             fi
