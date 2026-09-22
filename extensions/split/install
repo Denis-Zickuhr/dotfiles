@@ -33,7 +33,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo -e "${YELLOW}Options:${NC}"
         echo "  -b, --base <branch>   Base branch for fork point and PR (default: repo default)"
         echo "  --no-pr               Skip PR creation (branches only)"
-        echo "  -y, --yes             Don't ask per branch — open a PR for every branch"
+        echo "  -y, --yes             Skip prompts — open a PR for every branch (git pr -f)"
         echo "  --force               Force push created branches"
         echo "  -n, --dry-run         Show what would happen, make no changes"
         echo "  -h, --help            Show this help"
@@ -47,7 +47,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "  1. Detects commits unique to <branch> vs base"
         echo "  2. For each commit, derives a branch name from its message"
         echo "  3. Creates each branch off base, cherry-picks the single commit, pushes"
-        echo "  4. Then asks — per branch — whether to open a PR (if gh is available)"
+        echo "  4. Opens a PR per branch via 'git pr' (template + labels), or gh/link"
         exit 0
     }
 
@@ -182,31 +182,26 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     }
 
     review_and_confirm() {
-        echo ""
-        echo -e "${CYAN}Splitting ${GREEN}$SOURCE_BRANCH${NC} ${CYAN}onto base ${GREEN}$BASE_BRANCH${NC} ${CYAN}(${#COMMITS_RAW[@]} commits):${NC}"
-        echo ""
+        echo -e "${CYAN}$SOURCE_BRANCH${NC} → ${#COMMITS_RAW[@]} branch(es) onto ${GREEN}$BASE_BRANCH${NC}"
         local hash msg branch
         for line in "${COMMITS_RAW[@]}"; do
             hash=${line%%$'\t'*}
             msg=${line#*$'\t'}
             branch=$(message_to_branch "$msg")
-            echo -e "  ${GRAY}${hash:0:7}${NC} $msg"
-            echo -e "        ${CYAN}→ $branch${NC}"
+            echo -e "  ${GRAY}${hash:0:7}${NC} ${CYAN}$branch${NC}"
         done
-        echo ""
 
         if [ "$DRY_RUN" = true ]; then
-            echo -e "${YELLOW}Dry run — no branches created.${NC}"
+            echo -e "${YELLOW}dry run — nothing created.${NC}"
             exit 0
         fi
 
         local mode="push"
         [ "$FORCE_PUSH" = true ] && mode="force-push"
-
-        printf "Create and %s %d branches? [Y/n] " "$mode" "${#COMMITS_RAW[@]}"
+        printf "create and %s? [Y/n] " "$mode"
         read -r confirm < /dev/tty
         case "$confirm" in
-            [nN][oO]|[nN]) echo -e "${YELLOW}Cancelled.${NC}"; exit 0 ;;
+            [nN][oO]|[nN]) echo -e "${YELLOW}cancelled.${NC}"; exit 0 ;;
         esac
     }
 
@@ -252,8 +247,11 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             base_ref="origin/$BASE_BRANCH"
         fi
 
-        local has_gh=false
-        command -v gh > /dev/null 2>&1 && has_gh=true
+        # Prefer the `git pr` extension (template + labels); fall back to gh.
+        HAS_GIT_PR=false
+        git config --global --get alias.pr > /dev/null 2>&1 && HAS_GIT_PR=true
+        HAS_GH=false
+        command -v gh > /dev/null 2>&1 && HAS_GH=true
 
         # Each commit becomes an independent branch off base_ref. We do the
         # cherry-pick inside a throwaway worktree so it is immune to the state
@@ -269,8 +267,6 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             branch=$(message_to_branch "$msg")
             branch=$(unique_branch_name "$branch")
 
-            log "Commit ${hash:0:7} → $branch"
-
             # Fresh worktree pinned to base_ref, on the new branch.
             if ! git worktree add -q -b "$branch" "$WORKTREE_DIR" "$base_ref" > /dev/null 2>&1; then
                 error "Worktree/branch creation failed for $branch"; rollback
@@ -278,8 +274,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             CREATED_BRANCHES+=("$branch")
 
             if ! git -C "$WORKTREE_DIR" cherry-pick "$hash" > /dev/null 2>&1; then
-                error "Conflict cherry-picking ${hash:0:7} onto $base_ref."
-                echo -e "  ${GRAY}The commit does not apply cleanly on '$BASE_BRANCH'.${NC}"
+                error "$branch: ${hash:0:7} does not apply cleanly on $BASE_BRANCH."
                 git -C "$WORKTREE_DIR" cherry-pick --abort &> /dev/null
                 git worktree remove --force "$WORKTREE_DIR" &> /dev/null
                 rollback
@@ -294,53 +289,49 @@ SCRIPT_CONTENT=$(cat <<'EOF'
                 git worktree remove --force "$WORKTREE_DIR" &> /dev/null
                 rollback
             fi
+            echo -e "${GREEN}✓${NC} $branch"
 
-            # Done with this branch's worktree.
-            git worktree remove --force "$WORKTREE_DIR" &> /dev/null
-            echo -e "  ${GREEN}✓${NC} pushed ${GREEN}$branch${NC}"
-
-            # Ask about a PR for THIS branch, individually.
-            if [ "$NO_PR" != true ] && [ "$has_gh" = true ]; then
-                local yn="y"
-                if [ "$YES" != true ]; then
-                    printf "    Open PR for %s? [Y/n] " "$branch"
-                    read -r yn < /dev/tty
-                fi
-                case "$yn" in
-                    [nN][oO]|[nN])
-                        local link=$(generate_pr_link "$BASE_BRANCH" "$branch")
-                        echo -e "    ${GRAY}skipped — open manually: ${link}${NC}"
-                        ;;
-                    *)
-                        if gh pr create --title "$msg" --body "$msg" --base "$BASE_BRANCH" --head "$branch" > /dev/null 2>&1; then
-                            local url=$(gh pr view "$branch" --json url --jq '.url' 2>/dev/null)
-                            PR_LINKS+=("$url")
-                            echo -e "    ${GREEN}→ PR:${NC} ${CYAN}${url}${NC}"
+            # PR for THIS branch. Prefer the `git pr` extension (template +
+            # labels); it runs its own confirm/preview, so we don't double-ask.
+            if [ "$NO_PR" != true ]; then
+                if [ "$HAS_GIT_PR" = true ]; then
+                    # Run inside the worktree so `git pr` acts on this branch.
+                    if [ "$YES" = true ]; then
+                        ( cd "$WORKTREE_DIR" && git pr create -b "$BASE_BRANCH" -f )
+                    else
+                        ( cd "$WORKTREE_DIR" && git pr create -b "$BASE_BRANCH" )
+                    fi
+                else
+                    # Fallback: no `git pr` — ask, then use gh or just a link.
+                    local want_pr=true
+                    if [ "$YES" != true ]; then
+                        printf "  open PR? [Y/n] "
+                        read -r yn < /dev/tty
+                        case "$yn" in [nN][oO]|[nN]) want_pr=false;; esac
+                    fi
+                    if [ "$want_pr" = true ]; then
+                        if [ "$HAS_GH" = true ] \
+                            && gh pr create --title "$msg" --body "$msg" --base "$BASE_BRANCH" --head "$branch" > /dev/null 2>&1; then
+                            PR_LINKS+=("$(gh pr view "$branch" --json url --jq '.url' 2>/dev/null)")
                         else
-                            local link=$(generate_pr_link "$BASE_BRANCH" "$branch")
-                            PR_LINKS+=("$link")
-                            echo -e "    ${YELLOW}PR create failed — open manually:${NC} ${CYAN}${link}${NC}"
+                            PR_LINKS+=("$(generate_pr_link "$BASE_BRANCH" "$branch")")
                         fi
-                        ;;
-                esac
-            else
-                local link=$(generate_pr_link "$BASE_BRANCH" "$branch")
-                PR_LINKS+=("$link")
-                echo -e "    ${GRAY}PR link: ${link}${NC}"
+                    fi
+                fi
             fi
+
+            git worktree remove --force "$WORKTREE_DIR" &> /dev/null
         done
     }
 
     finish_execution() {
         echo ""
-        echo -e "${GREEN}Done.${NC} Created ${#CREATED_BRANCHES[@]} branches:"
-        for b in "${CREATED_BRANCHES[@]}"; do echo -e "  ${GRAY}•${NC} $b"; done
+        echo -e "${GREEN}Done — ${#CREATED_BRANCHES[@]} branch(es).${NC}"
         if [ ${#PR_LINKS[@]} -gt 0 ]; then
-            echo ""
-            echo -e "${GREEN}PR links:${NC}"
-            for link in "${PR_LINKS[@]}"; do echo -e "  ${CYAN}$link${NC}"; done
+            for link in "${PR_LINKS[@]}"; do
+                [ -n "$link" ] && echo -e "  ${CYAN}$link${NC}"
+            done
         fi
-        echo ""
     }
 
     parse_args "$@"
