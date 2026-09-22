@@ -76,6 +76,11 @@
       "name": "shh",
       "version": "1.0.0",
       "description": "Stage, amend into the last commit, and safe force-push (--force-with-lease)"
+    },
+    {
+      "name": "split",
+      "version": "1.0.0",
+      "description": "Split a branch into one branch (and PR) per commit — reverse cbn naming"
     }
   ]
 }

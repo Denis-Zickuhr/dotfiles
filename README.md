@@ -27,6 +27,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Denis-Zickuhr/dotfiles/main/in
 | sync | Rebase or merge upstream into current branch |
 | standup | Show recent commits for daily standups |
 | shh | Stage, amend into last commit, and safe force-push |
+| split | Split a branch into one branch (and PR) per commit, reverse cbn naming |
 
 ## Manager
 

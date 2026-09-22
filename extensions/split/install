@@ -1,0 +1,315 @@
+#!/bin/bash
+
+SCRIPT_CONTENT=$(cat <<'EOF'
+    VERSION="1.0.0"
+    GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
+
+    # globals
+    SOURCE_BRANCH=""
+    BASE_BRANCH=""
+    FORCE_PUSH=false
+    NO_PR=false
+    DRY_RUN=false
+    START_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
+    COMMITS_RAW=()
+    CREATED_BRANCHES=()
+    PR_LINKS=()
+
+    CT="feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert"
+
+    show_help() {
+        echo -e "${CYAN}git split v$VERSION${NC}"
+        echo ""
+        echo "Split a branch into one branch (and PR) per commit."
+        echo "Each commit becomes its own branch, named via reverse-cbn"
+        echo "(commit message -> branch name), then pushed with an optional PR."
+        echo ""
+        echo -e "${YELLOW}Usage:${NC}"
+        echo "  git split <branch>              Split <branch> into one branch per commit"
+        echo "  git split <branch> -b <base>    Use <base> as the fork point / PR base"
+        echo ""
+        echo -e "${YELLOW}Options:${NC}"
+        echo "  -b, --base <branch>   Base branch for fork point and PR (default: repo default)"
+        echo "  --no-pr               Skip PR creation (branches only)"
+        echo "  --force               Force push created branches"
+        echo "  -n, --dry-run         Show what would happen, make no changes"
+        echo "  -h, --help            Show this help"
+        echo "  -v, --version         Show version"
+        echo ""
+        echo -e "${YELLOW}Example:${NC}"
+        echo "  git split v1.0.0"
+        echo "  git split v1.0.0 -b main"
+        echo ""
+        echo -e "${YELLOW}Flow:${NC}"
+        echo "  1. Detects commits unique to <branch> vs base"
+        echo "  2. For each commit, derives a branch name from its message"
+        echo "  3. Creates the branch off base, cherry-picks the single commit"
+        echo "  4. Pushes and (if gh is available) opens a PR"
+        exit 0
+    }
+
+    log() { echo -e "${CYAN}▸${NC} $1"; }
+    error() { echo -e "${RED}✗${NC} $1"; }
+
+    # --- reverse cbn: commit message -> branch name -------------------------
+    # "JIRA-123 - feat: add login"  -> "JIRA-123-feat-add-login"
+    # "feat(api): add login"        -> "feat-api-add-login"
+    # "fix: broken navbar"          -> "fix-broken-navbar"
+    # Falls back to a slug of the subject when no conventional type is found.
+    message_to_branch() {
+        local msg="$1"
+        local prefix="" type="" scope="" desc=""
+
+        # Split optional "PREFIX - " (ticket) from the rest.
+        local rest="$msg"
+        if echo "$msg" | grep -qE '^.+ - '; then
+            prefix=$(echo "$msg" | sed -E 's/ - .*//')
+            rest=$(echo "$msg" | sed -E 's/^.+ - //')
+        fi
+
+        # Match "<type>(scope): desc" or "<type>: desc".
+        type=$(echo "$rest" | grep -oE "^(${CT})" | head -n 1)
+        if [ -n "$type" ]; then
+            scope=$(echo "$rest" | grep -oE "^(${CT})\([^)]+\)" | sed -E "s/^(${CT})\(//;s/\)$//")
+            desc=$(echo "$rest" | sed -E "s/^(${CT})(\([^)]+\))?:?[[:space:]]*//")
+        else
+            # No conventional type: slug the whole subject.
+            desc="$rest"
+        fi
+
+        # Build "<prefix>-<type>-<scope>-<desc>" from the parts we have.
+        local name=""
+        [ -n "$prefix" ] && name="$prefix"
+        [ -n "$type" ] && name="${name:+$name-}$type"
+        [ -n "$scope" ] && name="${name:+$name-}$scope"
+        [ -n "$desc" ] && name="${name:+$name-}$desc"
+
+        # Slugify: lowercase-ish is not forced (prefixes like JIRA stay), but
+        # collapse anything non-alphanumeric to single dashes and trim.
+        name=$(echo "$name" \
+            | sed -E 's/[^A-Za-z0-9]+/-/g' \
+            | sed -E 's/-+/-/g' \
+            | sed -E 's/^-+//;s/-+$//')
+
+        [ -z "$name" ] && name="split-commit"
+        echo "$name"
+    }
+
+    generate_pr_link() {
+        local base=$1; local head=$2
+        local remote=$(git remote get-url origin 2>/dev/null)
+        if [[ "$remote" == git@* ]]; then
+            remote=${remote//:/\/}; remote=${remote//git@/https:\/\/}
+        fi
+        remote=${remote%.git}
+        echo "$remote/compare/$base...$head?expand=1"
+    }
+
+    parse_args() {
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                -h|--help)    show_help ;;
+                -v|--version) echo "git split v$VERSION"; exit 0 ;;
+                -b|--base)    BASE_BRANCH="$2"; shift 2; continue ;;
+                --no-pr)      NO_PR=true ;;
+                --force)      FORCE_PUSH=true ;;
+                -n|--dry-run) DRY_RUN=true ;;
+                -*)           error "Unknown option: $1"; show_help ;;
+                *)
+                    if [ -z "$SOURCE_BRANCH" ]; then
+                        SOURCE_BRANCH="$1"
+                    else
+                        error "Unexpected argument: $1"; show_help
+                    fi
+                    ;;
+            esac
+            shift
+        done
+    }
+
+    validate_inputs() {
+        if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+            error "Not a git repo."; exit 1
+        fi
+
+        if [ -z "$SOURCE_BRANCH" ]; then
+            error "Source branch required."
+            echo -e "${GRAY}Usage: git split <branch>${NC}"
+            exit 1
+        fi
+
+        if ! git show-ref --verify --quiet "refs/heads/$SOURCE_BRANCH" \
+            && ! git show-ref --verify --quiet "refs/remotes/origin/$SOURCE_BRANCH" \
+            && ! git rev-parse --verify --quiet "$SOURCE_BRANCH^{commit}" > /dev/null; then
+            error "Source '$SOURCE_BRANCH' not found."; exit 1
+        fi
+
+        # Resolve base branch (fork point / PR base).
+        if [ -z "$BASE_BRANCH" ]; then
+            BASE_BRANCH=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+            BASE_BRANCH=${BASE_BRANCH:-main}
+        fi
+    }
+
+    collect_commits() {
+        # Prefer origin/<base> if it exists, else local <base>.
+        local base_ref="$BASE_BRANCH"
+        if git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH"; then
+            base_ref="origin/$BASE_BRANCH"
+        elif ! git show-ref --verify --quiet "refs/heads/$BASE_BRANCH"; then
+            error "Base '$BASE_BRANCH' not found locally or on origin."; exit 1
+        fi
+
+        local fork_point
+        fork_point=$(git merge-base "$base_ref" "$SOURCE_BRANCH" 2>/dev/null)
+        if [ -z "$fork_point" ]; then
+            error "Could not determine fork point between '$BASE_BRANCH' and '$SOURCE_BRANCH'."
+            exit 1
+        fi
+
+        while IFS= read -r line; do
+            [ -n "$line" ] && COMMITS_RAW+=("$line")
+        done < <(git log --format="%H%x09%s" "$fork_point..$SOURCE_BRANCH" --reverse 2>/dev/null)
+
+        if [ ${#COMMITS_RAW[@]} -eq 0 ]; then
+            error "No unique commits found on '$SOURCE_BRANCH' vs '$BASE_BRANCH'."
+            exit 1
+        fi
+    }
+
+    review_and_confirm() {
+        echo ""
+        echo -e "${CYAN}Splitting ${GREEN}$SOURCE_BRANCH${NC} ${CYAN}onto base ${GREEN}$BASE_BRANCH${NC} ${CYAN}(${#COMMITS_RAW[@]} commits):${NC}"
+        echo ""
+        local hash msg branch
+        for line in "${COMMITS_RAW[@]}"; do
+            hash=${line%%$'\t'*}
+            msg=${line#*$'\t'}
+            branch=$(message_to_branch "$msg")
+            echo -e "  ${GRAY}${hash:0:7}${NC} $msg"
+            echo -e "        ${CYAN}→ $branch${NC}"
+        done
+        echo ""
+
+        if [ "$DRY_RUN" = true ]; then
+            echo -e "${YELLOW}Dry run — no branches created.${NC}"
+            exit 0
+        fi
+
+        local mode="push + PR"
+        [ "$NO_PR" = true ] && mode="push only"
+        ! command -v gh > /dev/null 2>&1 && mode="push only (gh not installed)"
+
+        printf "Create %d branches and %s? [Y/n] " "${#COMMITS_RAW[@]}" "$mode"
+        read -r confirm < /dev/tty
+        case "$confirm" in
+            [nN][oO]|[nN]) echo -e "${YELLOW}Cancelled.${NC}"; exit 0 ;;
+        esac
+    }
+
+    rollback() {
+        echo -e "\n${YELLOW}Rolling back...${NC}"
+        [ -n "$START_BRANCH" ] && git checkout "$START_BRANCH" &> /dev/null
+
+        local pushed=()
+        for b in "${CREATED_BRANCHES[@]}"; do
+            git ls-remote --heads origin "$b" 2>/dev/null | grep -q "$b" && pushed+=("$b")
+            git branch -D "$b" &> /dev/null
+        done
+
+        if [ ${#pushed[@]} -gt 0 ]; then
+            echo -e "${YELLOW}Branches already pushed (remove manually):${NC}"
+            for rb in "${pushed[@]}"; do echo -e "  git push origin --delete $rb"; done
+        fi
+        echo -e "${GREEN}Back on ${START_BRANCH}.${NC}"
+        exit 1
+    }
+
+    unique_branch_name() {
+        local base_name="$1" name="$1" n=2
+        while git show-ref --verify --quiet "refs/heads/$name" \
+            || git ls-remote --heads origin "$name" 2>/dev/null | grep -q "refs/heads/$name$"; do
+            name="${base_name}-${n}"
+            n=$((n+1))
+        done
+        echo "$name"
+    }
+
+    process_commits() {
+        local base_ref="$BASE_BRANCH"
+        git show-ref --verify --quiet "refs/remotes/origin/$BASE_BRANCH" && base_ref="origin/$BASE_BRANCH"
+
+        local has_gh=false
+        command -v gh > /dev/null 2>&1 && has_gh=true
+
+        local line hash msg branch
+        for line in "${COMMITS_RAW[@]}"; do
+            hash=${line%%$'\t'*}
+            msg=${line#*$'\t'}
+            branch=$(message_to_branch "$msg")
+            branch=$(unique_branch_name "$branch")
+
+            log "Commit ${hash:0:7} → $branch"
+
+            if ! git checkout -b "$branch" "$base_ref" > /dev/null 2>&1; then
+                error "Branch creation failed for $branch"; rollback
+            fi
+            CREATED_BRANCHES+=("$branch")
+
+            if ! git cherry-pick "$hash" > /dev/null 2>&1; then
+                error "Conflict cherry-picking ${hash:0:7} onto $branch."
+                git cherry-pick --abort &> /dev/null
+                rollback
+            fi
+
+            local push_args="-u origin $branch"
+            [ "$FORCE_PUSH" = true ] && push_args="--force $push_args"
+            if ! git push $push_args &> /dev/null; then
+                error "Push failed for $branch"; rollback
+            fi
+
+            if [ "$NO_PR" != true ] && [ "$has_gh" = true ]; then
+                if gh pr create --title "$msg" --body "$msg" --base "$BASE_BRANCH" --head "$branch" > /dev/null 2>&1; then
+                    local url=$(gh pr view "$branch" --json url --jq '.url' 2>/dev/null)
+                    PR_LINKS+=("$url")
+                    echo -e "  ${GREEN}✓${NC} $branch → PR: ${CYAN}${url}${NC}"
+                else
+                    local link=$(generate_pr_link "$BASE_BRANCH" "$branch")
+                    PR_LINKS+=("$link")
+                    echo -e "  ${GREEN}✓${NC} $branch pushed — open PR: ${CYAN}${link}${NC}"
+                fi
+            else
+                local link=$(generate_pr_link "$BASE_BRANCH" "$branch")
+                PR_LINKS+=("$link")
+                echo -e "  ${GREEN}✓${NC} $branch pushed — open PR: ${CYAN}${link}${NC}"
+            fi
+        done
+    }
+
+    finish_execution() {
+        [ -n "$START_BRANCH" ] && git checkout "$START_BRANCH" > /dev/null 2>&1
+        echo ""
+        echo -e "${GREEN}Done.${NC} Created ${#CREATED_BRANCHES[@]} branches:"
+        for b in "${CREATED_BRANCHES[@]}"; do echo -e "  ${GRAY}•${NC} $b"; done
+        if [ ${#PR_LINKS[@]} -gt 0 ]; then
+            echo ""
+            echo -e "${GREEN}PR links:${NC}"
+            for link in "${PR_LINKS[@]}"; do echo -e "  ${CYAN}$link${NC}"; done
+        fi
+        echo ""
+    }
+
+    parse_args "$@"
+    validate_inputs
+    collect_commits
+    review_and_confirm
+    process_commits
+    finish_execution
+EOF
+)
+
+ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
+
+git config --global alias.split "!f() {
+    bash -c '$ESCAPED_CODE' -- \"\$@\"
+}; f"
