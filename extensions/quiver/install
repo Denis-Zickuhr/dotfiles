@@ -1,10 +1,16 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.1.0"
+    VERSION="2.3.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; BOLD="\033[1m"; NC="\033[0m"
 
     if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        if [ "${1:-}" = "--kip" ]; then
+            printf '%s\n' \
+                "{\"kip\":1,\"type\":\"hello\",\"title\":\"git quiver\",\"version\":\"$VERSION\"}" \
+                '{"kip":1,"type":"done","level":"error","title":"Not in a git repository","text":"Run this command from a folder inside a git repository."}'
+            exit 1
+        fi
         echo -e "${RED}Error: Not in a git repository.${NC}"
         exit 1
     fi
@@ -65,21 +71,26 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "  -b, --bottom              Move current branch to bottom of quiver"
         echo "  -m, --clean-merged        Remove merged branches from quiver"
         echo "  -e, --empty               Empty quiver"
+        echo "      --kip                 Speak KIP (Kai Interface Protocol) instead of the TUI"
         echo ""
         echo -e "${YELLOW}Interactive:${NC}"
-        echo "  git quiver                Open interactive branch selector"
+        echo "  git quiver                Open fullscreen branch picker"
         echo "  git quiver [n]            Switch directly to branch at index n"
         echo "  git quiver f              Switch to default (main) branch"
         echo ""
-        echo -e "${YELLOW}Commands (usable in interactive mode):${NC}"
-        echo "  ctx [n|.]                 Show branch context (ticket + PR)"
-        echo "  pr [n|.]                  Show/create pull request"
-        echo "  hotfix [n] <targets>      Cherry-pick from branch into targets"
-        echo "  sync [n|.]                Sync branch with upstream (rebase)"
+        echo -e "${YELLOW}Picker keys:${NC}"
+        echo "  ↑/↓ or j/k                Move selection"
+        echo "  ←/→ or h/l                Page"
+        echo "  type                      Filter branches"
+        echo "  Enter                     Switch to highlighted branch"
+        echo "  Tab                       Open action mode (run a command on it)"
         echo "  a                         Add current branch to quiver"
+        echo "  Esc / q                   Quit"
         echo ""
-        echo -e "${GRAY}  [n] = branch index | [.] = all branches${NC}"
-        echo -e "${GRAY}  Example: 'ctx 3' or 'hotfix 2 master release-0708'${NC}"
+        echo -e "${GRAY}  Note: Tab opens actions because terminals can't distinguish${NC}"
+        echo -e "${GRAY}  Ctrl+Enter from Enter (same byte).${NC}"
+        echo ""
+        echo -e "${YELLOW}Action mode commands:${NC} ${GRAY}ctx · pr · hotfix · sync${NC}"
     }
 
     is_quiver_command() {
@@ -248,127 +259,262 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         manage_stash_pop "$target"
     }
 
-    quiver() {
-        local branches=($(get_quiver))
-        local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    # --- Action mode: pick a command to run against the highlighted branch ---
+    # Fullscreen sub-picker. Returns after running (or cancelling) a command.
+    action_mode() {
+        local target_branch="$1"     # branch the action runs against ("" = current)
+        local -a acts=($QUIVER_COMMANDS)
+        local sel=0 n=${#acts[@]}
+        local descA=( "context: ticket + PR status" "show/create pull request" \
+                      "cherry-pick into targets" "sync with upstream (rebase)" )
 
+        local old_stty=""; old_stty=$(stty -g 2>/dev/null)
+        _act_cleanup() { [ -n "$old_stty" ] && stty "$old_stty" 2>/dev/null; tput cnorm 2>/dev/null; }
+        stty -echo -icanon min 1 time 0 2>/dev/null
+        tput civis 2>/dev/null
+
+        local label="${target_branch:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}"
+        local chosen="" extra=""
+        while true; do
+            printf '\033[H\033[J'
+            printf '  \033[1;36mAction mode\033[0m \033[2m— run on\033[0m \033[32m%s\033[0m\n\n' "$label"
+            local i
+            for (( i=0; i<n; i++ )); do
+                if [ "$i" -eq "$sel" ]; then
+                    printf '  \033[7m› git %-8s\033[0m \033[2m%s\033[0m\n' "${acts[$i]}" "${descA[$i]}"
+                else
+                    printf '    git %-8s \033[2m%s\033[0m\n' "${acts[$i]}" "${descA[$i]}"
+                fi
+            done
+            printf '\n  \033[2m↑/↓ move · Enter run · Esc/Tab back\033[0m\n'
+
+            local key="" k2="" k3=""
+            IFS= read -rsn1 key
+            if [ "$key" = $'\x1b' ]; then
+                IFS= read -rsn1 -t 0.05 k2
+                if [ "$k2" = '[' ]; then
+                    IFS= read -rsn1 -t 0.05 k3
+                    case "$k3" in
+                        A) sel=$(( (sel-1+n)%n ));;
+                        B) sel=$(( (sel+1)%n ));;
+                    esac
+                else
+                    break   # bare Esc = back
+                fi
+            elif [ "$key" = $'\t' ]; then
+                break       # Tab = back
+            elif [ -z "$key" ]; then
+                chosen="${acts[$sel]}"; break   # Enter = run
+            elif [ "$key" = 'q' ]; then
+                break
+            else
+                case "$key" in
+                    k) sel=$(( (sel-1+n)%n ));;
+                    j) sel=$(( (sel+1)%n ));;
+                esac
+            fi
+        done
+
+        _act_cleanup
+        printf '\033[H\033[J'
+        [ -z "$chosen" ] && return 1
+
+        # hotfix needs targets; ask for them on a normal prompt.
+        if [ "$chosen" = "hotfix" ]; then
+            printf "  ${CYAN}git hotfix${NC} targets (space separated): "
+            read -r extra < /dev/tty
+            [ -z "$extra" ] && { echo -e "  ${YELLOW}No targets — cancelled.${NC}"; return 1; }
+        fi
+
+        # Build args for run_quiver_command: [index] [extra]
+        # It resolves the branch from a display index; "" means current.
+        if [ -n "$target_branch" ] && [ -n "$ACTION_INDEX" ]; then
+            run_quiver_command "$chosen" "$ACTION_INDEX" $extra
+        else
+            run_quiver_command "$chosen" $extra
+        fi
+        echo ""
+        printf "  ${GRAY}Press any key to return...${NC}"
+        read -rsn1 < /dev/tty
+        return 0
+    }
+
+    # --- Interactive fullscreen picker (nav-style) ---------------------------
+    # ↑/↓ or j/k move · ←/→ or h/l page · type to filter · Enter switch ·
+    # Tab open action mode · a add current · Esc/q quit.
+    # NOTE: Ctrl+Enter is NOT distinguishable from Enter in a standard terminal
+    # (both send the same byte), so Tab is used to open action mode instead.
+    quiver() {
         local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
         main_branch=${main_branch:-main}
+        local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
-        # Header
-        echo ""
-        echo -e "${BOLD}${CYAN}  quiver${NC} ${GRAY}— branch manager${NC}"
-        echo -e "${GRAY}  ──────────────────────────────────────────${NC}"
+        # Build the item list: main first, then quiver branches (excluding main),
+        # then current branch if it's not already present.
+        local -a branches=($(get_quiver))
+        local -a items=() ; local -a is_main=()
+        items+=("$main_branch"); is_main+=(1)
+        local -a display_map=()   # for each item, its quiver display index ("" if none)
+        display_map+=("")
+        local dnum=1 b
+        for b in "${branches[@]}"; do
+            [ "$b" = "$main_branch" ] && continue
+            items+=("$b"); is_main+=(0); display_map+=("$dnum")
+            dnum=$((dnum+1))
+        done
+        # current not in list?
+        local found=0
+        for b in "${items[@]}"; do [ "$b" = "$current" ] && found=1; done
+        [ "$found" -eq 0 ] && [ -n "$current" ] && { items+=("$current"); is_main+=(0); display_map+=(""); }
 
-        if [ ${#branches[@]} -eq 0 ] && [ -z "$main_branch" ]; then
+        if [ ${#items[@]} -eq 0 ]; then
             echo -e "  ${YELLOW}Empty. Use -a to add or -f to pick from origin.${NC}"
             return
         fi
 
-        local current_in_quiver=false
-        [ "$current" == "$main_branch" ] && current_in_quiver=true
-        for b in "${branches[@]}"; do
-            [ "$b" == "$current" ] && current_in_quiver=true
-        done
-
-        # Display main branch
-        if [ "$current" == "$main_branch" ]; then
-            echo -e "  ${GREEN}▸ f) $main_branch ${GRAY}(default)${NC}"
-        else
-            echo -e "    ${GRAY}f)${NC} $main_branch ${GRAY}(default)${NC}"
-        fi
-
-        # Display current branch if not in quiver
-        if [ "$current_in_quiver" = false ]; then
-            echo -e "  ${GREEN}▸    $current ${GRAY}(current — not in quiver)${NC}"
-        fi
-
-        # Display indexed branches
-        local display_indices=()
-        local display_number=1
-
-        for i in "${!branches[@]}"; do
-            local b="${branches[$i]}"
-            [ "$b" == "$main_branch" ] && continue
-
-            if [ "$current" == "$b" ]; then
-                echo -e "  ${GREEN}▸ $display_number) $b${NC}"
-            else
-                echo -e "    ${GRAY}$display_number)${NC} $b"
-            fi
-            display_indices+=("$i")
-            display_number=$((display_number + 1))
-        done
-
-        # Footer
-        echo -e "${GRAY}  ──────────────────────────────────────────${NC}"
-        echo -e "  ${GRAY}${#branches[@]} branches │ ctx, pr, hotfix, sync │ [a] add │ [h] help${NC}"
-        echo ""
-
-        # Input
-        local choice
-        if [ "$current_in_quiver" = false ]; then
-            read -p "  > " choice < /dev/tty
-        else
-            read -p "  > " choice < /dev/tty
-        fi
-
-        # Handle empty input
-        [ -z "$choice" ] && return
-
-        # Parse input: could be index, command, or action
-        local first_word=$(echo "$choice" | awk '{print $1}')
-        local rest_args=$(echo "$choice" | awk '{$1=""; print $0}' | sed 's/^ //')
-
-        # Quit
-        if [[ "$first_word" =~ ^[qQ]$ ]]; then
+        if [ ! -t 0 ] || [ ! -t 1 ]; then
+            echo -e "  ${YELLOW}quiver needs a terminal for interactive mode.${NC}"
             return
-
-        # Add current branch
-        elif [[ "$first_word" =~ ^[aA]$ ]]; then
-            local current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-            add_branch "$current_branch" "normal"
-
-        # Switch to main
-        elif [[ "$first_word" =~ ^[fF]$ ]]; then
-            perform_switch "$main_branch"
-
-        # Numeric: switch to branch
-        elif [[ "$first_word" =~ ^[0-9]+$ ]]; then
-            local display_idx=$((first_word - 1))
-            if [ "$display_idx" -ge 0 ] && [ "$display_idx" -lt "${#display_indices[@]}" ]; then
-                local array_idx="${display_indices[$display_idx]}"
-                local target="${branches[$array_idx]}"
-                perform_switch "$target"
-            else
-                echo -e "  ${RED}Invalid index.${NC}"
-            fi
-
-        # Quiver command
-        elif is_quiver_command "$first_word"; then
-            run_quiver_command "$first_word" $rest_args
-
-        # Help shortcut
-        elif [[ "$first_word" =~ ^[hH\?]$ ]]; then
-            echo ""
-            echo -e "  ${YELLOW}Actions:${NC}"
-            echo -e "    ${CYAN}[n]${NC}            Switch to branch n"
-            echo -e "    ${CYAN}f${NC}              Switch to main"
-            echo -e "    ${CYAN}a${NC}              Add current branch to quiver"
-            echo -e "    ${CYAN}q${NC}              Quit"
-            echo ""
-            echo -e "  ${YELLOW}Commands:${NC}"
-            echo -e "    ${CYAN}ctx${NC}            Context of current branch"
-            echo -e "    ${CYAN}ctx 3${NC}          Context of branch #3"
-            echo -e "    ${CYAN}ctx .${NC}          Context of all branches"
-            echo -e "    ${CYAN}pr .${NC}           PR status of all branches"
-            echo -e "    ${CYAN}sync .${NC}         Sync all branches with upstream"
-            echo -e "    ${CYAN}hotfix 3 master${NC} Hotfix branch #3 into master"
-            echo ""
-
-        else
-            echo -e "  ${RED}Unknown: '$first_word'. Type 'h' for help.${NC}"
         fi
+
+        local query="" sel=0 editing=0 page_size=10
+        local -a view=() view_idx=()
+
+        _qv_filter() {
+            view=(); view_idx=()
+            local i it
+            for i in "${!items[@]}"; do
+                it="${items[$i]}"
+                if [ -z "$query" ] || [[ "${it,,}" == *"${query,,}"* ]]; then
+                    view+=("$it"); view_idx+=("$i")
+                fi
+            done
+            local count=${#view[@]}
+            if [ "$count" -eq 0 ]; then sel=0
+            elif [ "$sel" -ge "$count" ]; then sel=$((count-1)); fi
+        }
+
+        _qv_render() {
+            local count=${#view[@]}
+            local total_pages=$(( (count + page_size - 1) / page_size )); [ "$total_pages" -lt 1 ] && total_pages=1
+            local page=0; [ "$page_size" -gt 0 ] && page=$((sel / page_size))
+            local start=$((page*page_size)) end=$((page*page_size+page_size-1))
+            [ "$end" -gt $((count-1)) ] && end=$((count-1))
+
+            printf '\033[H\033[J'
+            printf '  \033[1;36mquiver\033[0m \033[2m— branch manager · %d branches\033[0m\n\n' "${#branches[@]}"
+            printf '  Search: %s\033[7m \033[0m\n\n' "$query"
+            if [ "$count" -eq 0 ]; then
+                printf '    No matches.\n'
+            else
+                local i real name tag mark
+                for (( i=start; i<=end; i++ )); do
+                    real="${view_idx[$i]}"
+                    name="${view[$i]}"
+                    tag=""
+                    [ "${is_main[$real]}" = 1 ] && tag=" \033[2m(default)\033[0m"
+                    [ "$name" = "$current" ] && tag="$tag \033[32m●\033[0m"
+                    if [ -n "${display_map[$real]}" ]; then
+                        mark="\033[2m${display_map[$real]})\033[0m"
+                    elif [ "${is_main[$real]}" = 1 ]; then
+                        mark="\033[2mf)\033[0m"
+                    else
+                        mark="  "
+                    fi
+                    if [ "$i" -eq "$sel" ]; then
+                        printf '  \033[7m› %b %s\033[0m%b\n' "$mark" "$name" "$tag"
+                    else
+                        printf '    %b %s%b\n' "$mark" "$name" "$tag"
+                    fi
+                done
+            fi
+            printf '\n  Page %d/%d   \033[2m↑/↓ move · ←/→ page · Enter switch · Tab actions · a add · Esc quit\033[0m\n' \
+                "$((page+1))" "$total_pages"
+        }
+
+        _qv_move() { local c=${#view[@]}; [ "$c" -eq 0 ] && return
+            sel=$((sel+$1)); [ "$sel" -lt 0 ] && sel=$((c-1)); [ "$sel" -ge "$c" ] && sel=0; }
+        _qv_page() { local c=${#view[@]}; [ "$c" -eq 0 ] && return
+            sel=$((sel+$1*page_size)); [ "$sel" -lt 0 ] && sel=0; [ "$sel" -gt $((c-1)) ] && sel=$((c-1)); }
+
+        _qv_filter
+
+        local old_stty=""; old_stty=$(stty -g 2>/dev/null)
+        _qv_cleanup() { [ -n "$old_stty" ] && stty "$old_stty" 2>/dev/null; tput cnorm 2>/dev/null; printf '\033[H\033[J'; }
+        stty -echo -icanon min 1 time 0 2>/dev/null
+        tput civis 2>/dev/null
+
+        local action="" chosen_name="" chosen_index=""
+        while true; do
+            _qv_render
+            local key="" k2="" k3=""
+            IFS= read -rsn1 key || break
+            if [ "$key" = $'\x1b' ]; then
+                IFS= read -rsn1 -t 0.05 k2
+                if [ "$k2" = '[' ]; then
+                    IFS= read -rsn1 -t 0.05 k3
+                    case "$k3" in
+                        A) _qv_move -1;; B) _qv_move 1;;
+                        D) _qv_page -1;; C) _qv_page 1;;
+                    esac
+                elif [ -n "$query" ]; then
+                    query=""; editing=0; _qv_filter
+                else
+                    break   # Esc quits
+                fi
+            elif [ "$key" = $'\t' ]; then
+                if [ ${#view[@]} -gt 0 ]; then
+                    action="run"
+                    chosen_name="${view[$sel]}"
+                    chosen_index="${display_map[${view_idx[$sel]}]}"
+                    break
+                fi
+            elif [ -z "$key" ]; then
+                if [ ${#view[@]} -gt 0 ]; then
+                    action="switch"
+                    chosen_name="${view[$sel]}"
+                    break
+                fi
+            elif [ "$key" = $'\x7f' ] || [ "$key" = $'\x08' ]; then
+                [ -n "$query" ] && { query="${query%?}"; [ -z "$query" ] && editing=0; _qv_filter; }
+            elif [ "$key" = $'\x03' ]; then
+                break   # Ctrl-C
+            else
+                case "$key" in
+                    j) if [ "$editing" = 0 ]; then _qv_move 1; else query+="$key"; _qv_filter; fi;;
+                    k) if [ "$editing" = 0 ]; then _qv_move -1; else query+="$key"; _qv_filter; fi;;
+                    h) if [ "$editing" = 0 ]; then _qv_page -1; else query+="$key"; _qv_filter; fi;;
+                    l) if [ "$editing" = 0 ]; then _qv_page 1; else query+="$key"; _qv_filter; fi;;
+                    q) if [ "$editing" = 0 ]; then action="quit"; break; else query+="$key"; _qv_filter; fi;;
+                    a) if [ "$editing" = 0 ]; then action="add"; break; else query+="$key"; _qv_filter; fi;;
+                    *) editing=1; query+="$key"; _qv_filter;;
+                esac
+            fi
+        done
+
+        _qv_cleanup
+
+        case "$action" in
+            switch)
+                perform_switch "$chosen_name"
+                ;;
+            run)
+                # Determine the branch/index the action targets.
+                if [ "$chosen_name" = "$current" ] || [ -z "$chosen_index" ]; then
+                    ACTION_INDEX=""
+                    action_mode ""
+                else
+                    ACTION_INDEX="$chosen_index"
+                    action_mode "$chosen_name"
+                fi
+                ;;
+            add)
+                add_branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" "normal"
+                ;;
+            quit|"")
+                return
+                ;;
+        esac
     }
 
     quiver_origin() {
@@ -553,6 +699,185 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo -e "  ${YELLOW}Quiver emptied.${NC}"
     }
 
+    # --- KIP mode (Kai Interface Protocol) -----------------------------------
+    # `git quiver --kip` talks JSON Lines instead of drawing the TUI, so Kai can
+    # render the picker as a native screen. stdout is the protocol channel, so
+    # nothing else may print there. Self-contained on purpose: it needs neither
+    # the `kai` binary nor jq. Actions that need a terminal (hotfix, the label
+    # picker of pr) are not offered; pr runs with --force (no prompts) after an
+    # explicit confirmation.
+    kip_esc() {
+        local s=$1
+        s=${s//\\/\\\\}; s=${s//\"/\\\"}
+        s=${s//$'\n'/\\n}; s=${s//$'\r'/\\r}; s=${s//$'\t'/\\t}
+        printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'
+    }
+
+    kip_emit() { printf '%s\n' "$1"; }
+
+    # String value of a key in the last answer (values are flat strings here).
+    kip_get() {
+        local v
+        v=$(printf '%s' "$KIP_RESP" | sed -n 's/.*"'"$1"'" *: *"\(\([^"\\]\|\\.\)*\)".*/\1/p')
+        v=${v//\\\\/$'\001'}; v=${v//\\\"/\"}; v=${v//\\\//\/}; v=${v//$'\001'/\\}
+        printf '%s' "$v"
+    }
+
+    # Waits for Kai's next message; a cancel ends the program quietly.
+    kip_read() {
+        IFS= read -r KIP_RESP || exit 130
+        kip_is_type cancel && exit 130
+    }
+
+    # Is the last answer of this message type? (tolerates spaces around the colon)
+    kip_is_type() { [[ "$KIP_RESP" =~ \"type\"\ *:\ *\"$1\" ]]; }
+
+    kip_done() {
+        local level=$1 title=$2 text=${3:-}
+        kip_emit "{\"kip\":1,\"type\":\"done\",\"level\":\"$level\",\"title\":\"$(kip_esc "$title")\",\"text\":\"$(kip_esc "$text")\"}"
+    }
+
+    # Position of a branch in the quiver as displayed (main excluded); empty if absent.
+    kip_display_index() {
+        local main_branch=$1 target=$2 n=1 b
+        for b in $(get_quiver); do
+            [ "$b" = "$main_branch" ] && continue
+            [ "$b" = "$target" ] && { echo "$n"; return; }
+            n=$((n+1))
+        done
+    }
+
+    kip_run_action() {
+        local act=$1 target=$2 main_branch=$3
+        local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        case "$act" in
+            switch) perform_switch "$target"; return ;;
+            add)    add_branch "$current" "normal"; return ;;
+            remove) remove_branch "$(kip_display_index "$main_branch" "$target")"; return ;;
+            clean)  clean_merged_branches; return ;;
+        esac
+
+        if ! git config --global --get "alias.$act" > /dev/null 2>&1; then
+            echo "'git $act' is not installed. Install it with: git extension"
+            return 1
+        fi
+        local args=""
+        [ "$act" = "sync" ] && args="--abort-on-fail"
+        [ "$act" = "pr" ] && args="--force --no-labels"
+
+        if [ "$target" = "$current" ]; then
+            git "$act" $args
+            return $?
+        fi
+        if ! git checkout "$target" > /dev/null 2>&1; then
+            echo "Could not check out '$target' (uncommitted changes?)."
+            return 1
+        fi
+        git "$act" $args
+        local rc=$?
+        git checkout "$current" > /dev/null 2>&1
+        return $rc
+    }
+
+    # The branch picker: default branch, quiver branches, then the current one.
+    kip_branch_field() {
+        local main_branch=$1
+        local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        local opts="" b desc n=1 have_current=0
+        _kip_opt() {
+            opts+="${opts:+,}{\"value\":\"$(kip_esc "$1")\",\"label\":\"$(kip_esc "$1")\",\"description\":\"$(kip_esc "$2")\"}"
+        }
+        _kip_opt "$main_branch" "default branch$([ "$main_branch" = "$current" ] && echo ' · current')"
+        [ "$main_branch" = "$current" ] && have_current=1
+        for b in $(get_quiver); do
+            [ "$b" = "$main_branch" ] && continue
+            desc="#$n"; [ "$b" = "$current" ] && { desc="$desc · current"; have_current=1; }
+            _kip_opt "$b" "$desc"
+            n=$((n+1))
+        done
+        if [ "$have_current" -eq 0 ] && [ -n "$current" ]; then
+            _kip_opt "$current" "current · not in the quiver"
+        fi
+        printf '{"name":"branch","type":"list","label":"Branch","required":true,"searchable":true,"page_size":12,"default":"%s","options":[%s]}' \
+            "$(kip_esc "${current:-$main_branch}")" "$opts"
+    }
+
+    # Runs one chip against the selected branch and reports in a chip_result.
+    kip_chip() {
+        local chip=$1 branch=$2 main_branch=$3
+        local current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        local out rc=0 refresh=false err=""
+
+        case "$chip" in
+            remove)
+                [ -z "$(kip_display_index "$main_branch" "$branch")" ] && err="Only branches listed in the quiver can be removed."
+                refresh=true ;;
+            add|clean) refresh=true ;;
+            ctx|sync|pr)
+                if [ "$branch" != "$current" ] && [ -z "$(kip_display_index "$main_branch" "$branch")" ]; then
+                    err="This action needs the current branch or one from the quiver."
+                fi ;;
+        esac
+
+        if [ -n "$err" ]; then
+            kip_emit "{\"kip\":1,\"type\":\"chip_result\",\"chip\":\"$chip\",\"state\":\"error\",\"text\":\"$(kip_esc "$err")\"}"
+            return 0
+        fi
+
+        kip_emit "{\"kip\":1,\"type\":\"chip_result\",\"chip\":\"$chip\",\"state\":\"running\",\"text\":\"Running…\"}"
+        out=$(kip_run_action "$chip" "$branch" "$main_branch" < /dev/null 2>&1); rc=$?
+        out=$(printf '%s\n' "$out" | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" | tail -n 200)
+        out=${out//\`\`\`/\'\'\'}
+        local text="" st=success title="$chip · $branch"
+        [ "$chip" = add ] && title="add · $current"
+        [ "$chip" = clean ] && title="clean merged"
+        [ -n "$out" ] && text=$'```\n'"$out"$'\n```'
+        [ "$rc" -ne 0 ] && { st=error; text="Exit code $rc."$'\n\n'"$text"; }
+        [ -z "$text" ] && text="Done."
+        kip_emit "{\"kip\":1,\"type\":\"chip_result\",\"chip\":\"$chip\",\"state\":\"$st\",\"title\":\"$(kip_esc "$title")\",\"text\":\"$(kip_esc "$text")\"}"
+        # The list changes after add/remove: refresh it in place.
+        $refresh && kip_emit "{\"kip\":1,\"type\":\"patch\",\"id\":\"pick\",\"seq\":0,\"fields\":[$(kip_branch_field "$main_branch")]}"
+        return 0
+    }
+
+    kip_main() {
+        kip_emit "{\"kip\":1,\"type\":\"hello\",\"title\":\"git quiver\",\"version\":\"$VERSION\"}"
+
+        local main_branch=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")
+        main_branch=${main_branch:-main}
+
+        # Submit = Enter in the TUI (switch). Everything else is a chip: the
+        # screen stays open and each result shows below, so you can chain actions.
+        local chips='{"id":"ctx","label":"Context","icon":"info","description":"Ticket and PR status (git ctx)","requires":["branch"]},{"id":"sync","label":"Sync","icon":"refresh-cw","description":"Rebase onto upstream; aborts on conflict","requires":["branch"],"confirm":{"title":"Sync with upstream?","text":"Rebases the branch onto its upstream and aborts on conflict.","confirm_label":"Sync","cancel_label":"Cancel"}},{"id":"pr","label":"Create or show PR","icon":"git-pull-request","description":"git pr --force","requires":["branch"],"confirm":{"title":"Create the pull request?","text":"Runs git pr --force: no prompts, default title and no labels.","confirm_label":"Create PR","cancel_label":"Cancel"}},{"id":"add","label":"Add current","icon":"bookmark-check","description":"Add the current branch to the quiver"},{"id":"clean","label":"Clean merged","icon":"sparkles","description":"Drop merged, closed or deleted branches from the quiver (git quiver -m)","confirm":{"title":"Clean merged branches?","text":"Fetches and prunes origin, then removes from the quiver every branch that is merged, has a merged/closed PR or is gone. The branches themselves are not deleted.","confirm_label":"Clean","cancel_label":"Cancel"}},{"id":"remove","label":"Remove","icon":"trash-2","danger":true,"description":"Remove the branch from the quiver","requires":["branch"],"confirm":{"title":"Remove from the quiver?","text":"Only removes it from the list; the branch itself is kept.","confirm_label":"Remove","cancel_label":"Keep"}}'
+        kip_emit "{\"kip\":1,\"type\":\"prompt\",\"id\":\"pick\",\"title\":\"Pick a branch\",\"description\":\"Repository: $(kip_esc "$(basename "$(git rev-parse --show-toplevel)")"). Run to switch, or use the actions below.\",\"submit_label\":\"Switch to branch\",\"fields\":[$(kip_branch_field "$main_branch")],\"chips\":[$chips]}"
+
+        local branch
+        while true; do
+            kip_read
+            if kip_is_type chip; then
+                kip_chip "$(kip_get chip)" "$(kip_get branch)" "$main_branch"
+                continue
+            fi
+            branch=$(kip_get branch)
+            [ -n "$branch" ] && break
+            kip_emit '{"kip":1,"type":"invalid","id":"pick","message":"Pick a branch first."}'
+        done
+
+        kip_emit '{"kip":1,"type":"progress","value":null,"label":"Switching…","cancellable":false}'
+        local out rc
+        out=$(kip_run_action switch "$branch" "$main_branch" < /dev/null 2>&1); rc=$?
+        out=$(printf '%s\n' "$out" | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" | tail -n 200)
+        out=${out//\`\`\`/\'\'\'}
+        [ -n "$out" ] && kip_emit "{\"kip\":1,\"type\":\"markdown\",\"text\":\"$(kip_esc $'```\n'"$out"$'\n```')\"}"
+
+        if [ "$rc" -eq 0 ]; then
+            kip_done success "Switched to $branch"
+        else
+            kip_done error "Could not switch to $branch" "Exit code $rc."
+            exit 1
+        fi
+    }
+
     main() {
         case "${1:-}" in
             -h|--help|help) help; exit 0 ;;
@@ -577,6 +902,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             -b|--bottom) reorder_branch "bottom" ;;
             -m|--clean-merged) clean_merged_branches ;;
             -e|--empty) empty_quiver ;;
+            --kip) kip_main ;;
             *)
                 if [ $# -eq 0 ]; then quiver; exit 0; fi
 

@@ -14,15 +14,15 @@ bash <(curl -sL https://raw.githubusercontent.com/Denis-Zickuhr/dotfiles/main/in
 |------|-------------|
 | ctx | Unified branch context: ticket link and PR status |
 | pinch | Open, edit, and ship changed files |
-| marry | Branch creation, commit, and push in one flow |
+| marry | Branch creation, commit, and push in one flow; `--kip` for Kai |
 | torch | Burn local branches except protected ones |
 | rebirth | Hard-reset current branch to match origin |
 | cbn | Commit message auto-generated from branch name |
-| quiver | Interactive branch manager with stash and commands |
+| quiver | Interactive branch manager: fullscreen picker, Enter switches, Tab runs commands; `--kip` for Kai |
 | hotfix | Cherry-pick commits into multiple targets with PR links |
 | copen | Open modified files in your editor |
 | fresh | Switch to main and sync with remote |
-| pr | Create or list PRs, with template body and interactive label picker |
+| pr | Create or list PRs, with template body and interactive label picker; `--kip` for Kai |
 | wip | Quick work-in-progress commits |
 | sync | Rebase or merge upstream into current branch |
 | standup | Show recent commits for daily standups |

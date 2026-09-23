@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="1.5.1"
+    VERSION="1.6.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -21,6 +21,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "  -m, --message <msg>     Custom commit message (overrides cbn)"
         echo "  -f, --force             Skip confirmations"
         echo "  --no-pr                 Skip PR creation"
+        echo "      --kip               Speak KIP (Kai Interface Protocol) instead of prompting"
         echo "  -h, --help              Show help"
         echo "  -v, --version           Show version"
         echo ""
@@ -71,6 +72,12 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     }
 
     if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        if [ "${1:-}" = "--kip" ]; then
+            printf '%s\n' \
+                "{\"kip\":1,\"type\":\"hello\",\"title\":\"git marry\",\"version\":\"$VERSION\"}" \
+                '{"kip":1,"type":"done","level":"error","title":"Not in a git repository","text":"Run this command from a folder inside a git repository."}'
+            exit 1
+        fi
         echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
     fi
 
@@ -845,6 +852,531 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         esac
     }
 
+    # ---------- KIP mode (Kai Interface Protocol) ----------
+    # `--kip` talks JSON Lines instead of prompting on the terminal, so Kai can
+    # draw the flow as a native screen. fd 3 is the protocol channel (the real
+    # stdout); everything else printed to stdout goes to stderr (Kai's log), and
+    # Kai's answers arrive on fd 4 while child processes see an empty stdin.
+    # Self-contained on purpose: no `kai` binary, no jq.
+    kip_init() {
+        exec 3>&1 1>&2 4<&0 0</dev/null
+        shopt -u patsub_replacement 2>/dev/null
+    }
+
+    kip_esc() {
+        local s=$1
+        s=${s//\\/\\\\}; s=${s//\"/\\\"}
+        s=${s//$'\n'/\\n}; s=${s//$'\r'/\\r}; s=${s//$'\t'/\\t}
+        printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'
+    }
+
+    kip_emit() { printf '%s\n' "$1" >&3; }
+
+    kip_unesc() {
+        local v=$1
+        v=${v//\\\\/$'\001'}; v=${v//\\\"/\"}; v=${v//\\\//\/}
+        v=${v//\\n/$'\n'}; v=${v//\\t/$'\t'}; v=${v//\\r/$'\r'}; v=${v//$'\001'/\\}
+        printf '%s' "$v"
+    }
+
+    # String value of a key in the last answer.
+    kip_get() {
+        kip_unesc "$(printf '%s' "$KIP_RESP" | sed -n 's/.*"'"$1"'" *: *"\(\([^"\\]\|\\.\)*\)".*/\1/p')"
+    }
+
+    # Is the flag (a boolean inside a `flags` field) true in the last answer?
+    kip_flag() { [[ "$KIP_RESP" =~ \"$1\"\ *:\ *true ]]; }
+
+    # Strings of an array value (`multiple` list) into KIP_ARR.
+    kip_array() {
+        KIP_ARR=()
+        local rest=$KIP_RESP re='^[[:space:]]*"(([^"\\]|\\.)*)"[[:space:]]*,?(.*)$'
+        [[ "$rest" == *"\"$1\":["* ]] || return 0
+        rest=${rest#*"\"$1\":["}
+        while [[ "$rest" =~ $re ]]; do
+            KIP_ARR+=("$(kip_unesc "${BASH_REMATCH[1]}")")
+            rest=${BASH_REMATCH[3]}
+        done
+    }
+
+    # Is the last answer of this message type?
+    kip_is_type() { [[ "$KIP_RESP" =~ \"type\"\ *:\ *\"$1\" ]]; }
+
+    # Cancel (or a closed stdin) ends the program; KIP_ON_CANCEL can clean up first.
+    kip_cancel() {
+        [ -n "${KIP_ON_CANCEL:-}" ] && "$KIP_ON_CANCEL"
+        exit 130
+    }
+
+    kip_read() {
+        IFS= read -r -u 4 KIP_RESP || kip_cancel
+        kip_is_type cancel && kip_cancel
+        return 0
+    }
+
+    # kip_done <level> <title> [text] [actions-json]
+    kip_done() {
+        local acts=""; [ -n "${4:-}" ] && acts=",\"actions\":[$4]"
+        kip_emit "{\"kip\":1,\"type\":\"done\",\"level\":\"$1\",\"title\":\"$(kip_esc "$2")\",\"text\":\"$(kip_esc "${3:-}")\"$acts}"
+    }
+
+    kip_progress() {
+        kip_emit "{\"kip\":1,\"type\":\"progress\",\"value\":null,\"label\":\"$(kip_esc "$1")\",\"cancellable\":false}"
+    }
+
+    kip_invalid() {  # kip_invalid <prompt-id> <field> <message>
+        kip_emit "{\"kip\":1,\"type\":\"invalid\",\"id\":\"$1\",\"message\":\"$(kip_esc "$3")\",\"errors\":{\"$2\":\"$(kip_esc "$3")\"}}"
+    }
+
+    # ANSI-free, fence-safe tail of some output, as a Markdown code block.
+    kip_code() {
+        local out
+        out=$(printf '%s\n' "$1" | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" | tail -n "${2:-200}")
+        out=${out//\`\`\`/\'\'\'}
+        printf '%s' $'```\n'"$out"$'\n```'
+    }
+
+    # ---------- KIP: PR body template ----------
+    # Same template language as the terminal flow, but the {{ask}} tags become
+    # form fields instead of reading /dev/tty.
+
+    # {title} {ticket} {branch} {prefix} → values (no sed, so any text is safe)
+    kip_static() {
+        local t; t=$(printf '%b' "$1")
+        t=${t//\{title\}/$2}; t=${t//\{ticket\}/$3}; t=${t//\{branch\}/$4}; t=${t//\{prefix\}/$5}
+        printf '%s' "$t"
+    }
+
+    # Sets ASK_Q / ASK_D from one {{ask…}} tag.
+    kip_parse_ask() {
+        local re1='^\{\{ask:-"([^"]*)":"([^"]*)"\}\}$'
+        local re2='^\{\{ask:-([^:]*):"([^"]*)"\}\}$'
+        local re3='^\{\{ask:"([^"]*)"\}\}$'
+        TAG_Q=""; TAG_D=""
+        if   [[ "$1" =~ $re1 || "$1" =~ $re2 ]]; then TAG_D=${BASH_REMATCH[1]}; TAG_Q=${BASH_REMATCH[2]}
+        elif [[ "$1" =~ $re3 ]]; then TAG_Q=${BASH_REMATCH[1]}
+        fi
+    }
+
+    # kip_expand scan <text>  → fills ASK_Q[] / ASK_D[] with the template's questions
+    # kip_expand fill <text>  → KIP_BODY = text with ASK_A[] (or the default) in place of each tag
+    kip_expand() {
+        local mode=$1 text=$2 out="" line rest res tag n=0 ans
+        local re='\{\{ask[^}]*\}\}'
+        [ "$mode" = scan ] && { ASK_Q=(); ASK_D=(); }
+        while IFS= read -r line || [ -n "$line" ]; do
+            rest=$line; res=""
+            while [[ "$rest" =~ $re ]]; do
+                tag=${BASH_REMATCH[0]}
+                res+=${rest%%"$tag"*}
+                rest=${rest#*"$tag"}
+                kip_parse_ask "$tag"
+                if [ "$mode" = scan ]; then
+                    ASK_Q[n]=$TAG_Q; ASK_D[n]=$TAG_D
+                else
+                    ans=${ASK_A[n]:-$TAG_D}; res+=$ans
+                fi
+                n=$((n+1))
+            done
+            out+="$res$rest"$'\n'
+        done <<< "$text"
+        KIP_BODY=${out%$'\n'}
+    }
+
+    # One text field per {{ask}} question (ask_1, ask_2…). Never remembered:
+    # a description from the last PR does not belong in the next one.
+    kip_ask_fields() {
+        local i q out=""
+        for i in "${!ASK_Q[@]}"; do
+            q=${ASK_Q[i]:-Question $((i+1))}
+            out+=",{\"name\":\"ask_$((i+1))\",\"type\":\"textarea\",\"label\":\"$(kip_esc "$q")\",\"default\":\"$(kip_esc "${ASK_D[i]}")\",\"remember\":false}"
+        done
+        printf '%s' "$out"
+    }
+
+    # Reads the answers to the ask_N fields from the last response.
+    kip_ask_answers() {
+        local i; ASK_A=()
+        for i in "${!ASK_Q[@]}"; do ASK_A[i]=$(kip_get "ask_$((i+1))"); done
+    }
+
+    # ---------- KIP: git marry ----------
+
+    kip_step()  { # kip_step <steps-id> <item> <state> [detail]
+        kip_emit "{\"kip\":1,\"type\":\"step\",\"steps\":\"$1\",\"id\":\"$2\",\"state\":\"$3\",\"detail\":\"$(kip_esc "${4:-}")\"}"
+    }
+
+    # kip_fail <steps-id> <item> <title> <text>  — marks the step, reports and exits 1
+    kip_fail() {
+        kip_step "$1" "$2" error
+        kip_done error "$3" "$4"
+        exit 1
+    }
+
+    # git pr >= 2.1.0 can take the body/labels/draft flag from us (and knows label usage).
+    kip_pr_ok() {
+        local v; v=$(git pr --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+        [ -n "$v" ] && [ "$(printf '%s\n2.1.0\n' "$v" | sort -V | head -n 1)" = "2.1.0" ]
+    }
+
+    # pr.template is canonical (as in `git pr`); marry.template is the fallback.
+    kip_template() {
+        local t
+        t=$(git config --local --get pr.template 2>/dev/null)
+        [ -z "$t" ] && t=$(git config --global --get pr.template 2>/dev/null)
+        [ -z "$t" ] && t=$(get_pr_template)
+        printf '%s' "$t"
+    }
+
+    # Integer value of a key in the last answer (e.g. the seq of a change).
+    kip_num() {
+        [[ "$KIP_RESP" =~ \"$1\"\ *:\ *(-?[0-9]+) ]] && printf '%s' "${BASH_REMATCH[1]}"
+    }
+
+    # Working-tree changes, one `XY path` line each (renames split, no quoting).
+    kip_changes() { git -c core.quotepath=off status --short -uall --no-renames 2>/dev/null; }
+
+    # Files the user forced in/out from the table (newline-separated paths).
+    # They survive path edits and the Back button.
+    KIP_INC=""; KIP_EXC=""
+
+    kip_in_list() { grep -qFx -- "$1" <<< "$2"; }
+
+    # Which changed files end up in the commit? Fills KIP_INCLUDED (one path per
+    # line). Empty <paths> means everything; otherwise each comma-separated path
+    # pattern (plus files you already staged). Manual include/exclude wins.
+    kip_included() {
+        local raw=$1 pth out l all=false
+        KIP_INCLUDED=""
+        [ -z "${raw//[[:space:],]/}" ] && all=true
+        while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            if [ "$all" = true ] || [[ "${l:0:1}" =~ [MADRC] ]]; then KIP_INCLUDED+="${l:3}"$'\n'; fi
+        done < <(kip_changes)
+        if [ "$all" != true ]; then
+            local IFS=','
+            for pth in $raw; do
+                pth=$(echo "$pth" | sed 's/^ *//;s/ *$//')
+                [ -z "$pth" ] && continue
+                out=$(git -c core.quotepath=off add -n -- "$pth" 2>/dev/null | sed -E "s/^(add|remove) '(.*)'$/\2/")
+                [ -n "$out" ] && KIP_INCLUDED+="$out"$'\n'
+            done
+        fi
+        [ -n "$KIP_EXC" ] && KIP_INCLUDED=$(grep -vFxf <(printf '%s\n' "$KIP_EXC") <<< "$KIP_INCLUDED")
+        [ -n "$KIP_INC" ] && KIP_INCLUDED+=$'\n'"$KIP_INC"
+        KIP_INCLUDED=$(printf '%s\n' "$KIP_INCLUDED" | awk 'NF && !seen[$0]++')
+    }
+
+    # The `files` table: every changed file, marked when it goes in the commit.
+    kip_files_field() {
+        local raw=$1 l p inc rows="" total=0 chosen=0
+        kip_included "$raw"
+        while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            total=$((total+1)); [ "$total" -gt 1000 ] && break
+            p=${l:3}
+            if kip_in_list "$p" "$KIP_INCLUDED"; then inc="✓"; chosen=$((chosen+1)); else inc="—"; fi
+            if kip_in_list "$p" "$KIP_INC" || kip_in_list "$p" "$KIP_EXC"; then inc="$inc manual"; fi
+            rows+="${rows:+,}{\"path\":\"$(kip_esc "$p")\",\"included\":\"$(kip_esc "$inc")\",\"status\":\"$(kip_esc "${l:0:2}")\"}"
+        done < <(kip_changes)
+        printf '{"name":"files","type":"table","label":"Files","description":"%s","row_key":"path","searchable":true,"page_size":10,"columns":[{"key":"included","label":"In commit"},{"key":"status","label":"Status"},{"key":"path","label":"File"}],"rows":[%s]}' \
+            "$(kip_esc "$chosen of $total changed files will be committed.")" "$rows"
+    }
+
+    # Handles a chip of the files screen against the selected file. The paths
+    # come with the chip message so the table can be refreshed.
+    kip_start_chip() {
+        local chip=$1 path=$2 d n text="" ok=false patch=false
+        local paths; paths=$(kip_get paths)
+        if ! kip_changes | cut -c4- | grep -qFx -- "$path"; then
+            text="That file has no changes any more."; patch=true
+        else
+            case "$chip" in
+                diff)
+                    if git ls-files --error-unmatch -- "$path" > /dev/null 2>&1; then
+                        d=$(git diff --no-color HEAD -- "$path")
+                    else
+                        d=$(git diff --no-color --no-index -- /dev/null "$path" 2>/dev/null || true)
+                    fi
+                    n=$(printf '%s\n' "$d" | wc -l)
+                    d=$(printf '%s\n' "$d" | head -n 300)
+                    [ -z "${d//[[:space:]]/}" ] && d="(no textual changes)"
+                    text=$(kip_code "$d" 300)
+                    [ "$n" -gt 300 ] && text+=$'\n\n'"_… $((n-300)) more lines not shown._"
+                    ok=true ;;
+                include)
+                    KIP_EXC=$(grep -vFx -- "$path" <<< "$KIP_EXC")
+                    kip_in_list "$path" "$KIP_INC" || KIP_INC+="${KIP_INC:+$'\n'}$path"
+                    ok=true; patch=true; text="\`$path\` will be in the commit." ;;
+                exclude)
+                    KIP_INC=$(grep -vFx -- "$path" <<< "$KIP_INC")
+                    kip_in_list "$path" "$KIP_EXC" || KIP_EXC+="${KIP_EXC:+$'\n'}$path"
+                    ok=true; patch=true; text="\`$path\` stays out of the commit; its change is kept in the working tree." ;;
+                drop)
+                    if git cat-file -e "HEAD:$path" 2>/dev/null; then
+                        git restore --staged --worktree --source=HEAD -- "$path" > /dev/null 2>&1 && ok=true
+                    elif git ls-files --error-unmatch -- "$path" > /dev/null 2>&1; then
+                        git rm -qf -- "$path" > /dev/null 2>&1 && ok=true
+                    else
+                        rm -f -- "$path" && ok=true
+                    fi
+                    if $ok; then text="\`$path\` was discarded."; patch=true; else text="Could not discard \`$path\`."; fi ;;
+            esac
+        fi
+        local st=error; $ok && st=success
+        kip_emit "{\"kip\":1,\"type\":\"chip_result\",\"chip\":\"$chip\",\"state\":\"$st\",\"title\":\"$(kip_esc "$path")\",\"text\":\"$(kip_esc "$text")\"}"
+        $patch && kip_emit "{\"kip\":1,\"type\":\"patch\",\"id\":\"files\",\"seq\":0,\"fields\":[$(kip_files_field "$paths")]}"
+        return 0
+    }
+
+    # Read-only table of the files that will be committed (shown on the second screen).
+    kip_included_table() {
+        local rows="" l p n=0
+        while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            p=${l:3}
+            kip_in_list "$p" "$KIP_INCLUDED" || continue
+            n=$((n+1)); [ "$n" -gt 1000 ] && break
+            rows+="${rows:+,}{\"path\":\"$(kip_esc "$p")\",\"status\":\"$(kip_esc "${l:0:2}")\"}"
+        done < <(kip_changes)
+        kip_emit "{\"kip\":1,\"type\":\"table\",\"id\":\"included\",\"title\":\"In the commit ($n)\",\"columns\":[{\"key\":\"status\",\"label\":\"Status\"},{\"key\":\"path\",\"label\":\"File\"}],\"rows\":[$rows]}"
+    }
+
+    # Who the push authenticates as (helpful with multiple accounts); no network
+    # call unless gh is the git credential helper.
+    push_user_name() {
+        local u="" helper
+        helper=$(git config --get-all credential.https://github.com.helper 2>/dev/null; \
+                 git config --get-all credential.helper 2>/dev/null)
+        if echo "$helper" | grep -q 'gh ' && command -v gh >/dev/null 2>&1; then
+            u=$(gh api user --jq .login 2>/dev/null)
+        fi
+        [ -z "$u" ] && u=$(echo "$helper" | grep -oP 'username=\K[^"]+' | head -1)
+        [ -z "$u" ] && u=$(git config --get user.name)
+        echo "$u"
+    }
+
+    kip_main() {
+        kip_init
+        kip_emit "{\"kip\":1,\"type\":\"hello\",\"title\":\"git marry\",\"version\":\"$VERSION\"}"
+
+        local repo=$(basename "$(git rev-parse --show-toplevel)")
+        if [ -z "$(kip_changes)" ]; then
+            kip_done warning "No local changes" "There is nothing to commit in $repo."
+            exit 0
+        fi
+
+        local raw=""; [ -e src ] && raw="src"
+        local chips='{"id":"diff","label":"Show diff","icon":"file-diff","requires":["files"]},{"id":"include","label":"Include","icon":"file-plus","description":"Put the file in the commit, whatever the paths say","requires":["files"]},{"id":"exclude","label":"Exclude","icon":"undo-2","description":"Keep the file out of the commit (its change stays in the working tree)","requires":["files"]},{"id":"drop","label":"Drop file","icon":"trash-2","danger":true,"requires":["files"],"confirm":{"title":"Drop this file?","text":"Its change is discarded for good: tracked files go back to the last commit, new files are deleted.","confirm_label":"Drop","cancel_label":"Keep"}}'
+
+        # --- labels (once; used by the second screen) ---
+        local lbl_list="" opts="" lb labels_field=""
+        if command -v gh > /dev/null 2>&1; then
+            kip_progress "Loading labels…"
+            if kip_pr_ok; then lbl_list=$(git pr labels 2>/dev/null)
+            else lbl_list=$(gh label list --limit 200 --json name --jq '.[].name' 2>/dev/null); fi
+            while IFS= read -r lb; do [ -n "$lb" ] && opts+="${opts:+,}\"$(kip_esc "$lb")\""; done <<< "$lbl_list"
+            [ -n "$opts" ] && labels_field=",{\"name\":\"labels\",\"type\":\"list\",\"label\":\"Labels\",\"multiple\":true,\"searchable\":true,\"page_size\":10,\"description\":\"Most-used first\",\"options\":[$opts]}"
+        fi
+
+        local template=$(kip_template) title seq again
+        local push_user=$(push_user_name)
+        local who=""; [ -n "$push_user" ] && who="Pushing as $push_user. "
+
+        while true; do
+            # --- screen 1: paths, files, actions on the files ---
+            kip_emit "{\"kip\":1,\"type\":\"prompt\",\"id\":\"files\",\"title\":\"What goes in the commit?\",\"description\":\"Repository: $(kip_esc "$repo") · from $(kip_esc "$ORIGINAL_BRANCH"). Nothing is touched until the last screen.\",\"submit_label\":\"Next\",\"fields\":[{\"name\":\"paths\",\"type\":\"text\",\"label\":\"Paths to stage\",\"default\":\"$(kip_esc "$raw")\",\"watch\":true,\"remember\":false,\"placeholder\":\"src, docs/ — empty means all changes\",\"description\":\"Comma-separated. The table shows what each choice includes.\"},$(kip_files_field "$raw")],\"chips\":[$chips]}"
+            while true; do
+                kip_read
+                if kip_is_type change; then
+                    seq=$(kip_num seq)
+                    kip_emit "{\"kip\":1,\"type\":\"patch\",\"id\":\"files\",\"seq\":${seq:-0},\"fields\":[$(kip_files_field "$(kip_get paths)")]}"
+                    continue
+                fi
+                if kip_is_type chip; then
+                    kip_start_chip "$(kip_get chip)" "$(kip_get files)"
+                    continue
+                fi
+                raw=$(kip_get paths)
+                kip_included "$raw"
+                if [ -z "${KIP_INCLUDED//[[:space:]]/}" ]; then
+                    kip_invalid files paths "No changed file is selected for the commit."; continue
+                fi
+                break
+            done
+
+            # --- screen 2: branch, message, PR details ---
+            kip_expand scan "$(kip_static "$template" "" "" "" "")"
+            kip_included_table
+            kip_emit "{\"kip\":1,\"type\":\"prompt\",\"id\":\"ship\",\"title\":\"Branch and pull request\",\"description\":\"$(kip_esc "${who}Pushing creates the branch, commits the files above and opens the PR.")\",\"submit_label\":\"Commit, push and open PR\",\"back\":true,\"fields\":[{\"name\":\"branch\",\"type\":\"text\",\"label\":\"Branch name\",\"required\":true,\"remember\":false,\"placeholder\":\"ABC-123-feat-short-description\",\"description\":\"A conventional type in the name (feat, fix, chore…) lets git cbn write the commit message.\"},{\"name\":\"message\",\"type\":\"text\",\"label\":\"Commit message\",\"remember\":false,\"description\":\"Leave empty to generate it from the branch name.\"},{\"name\":\"title\",\"type\":\"text\",\"label\":\"PR title\",\"remember\":false,\"description\":\"Leave empty to use the commit message.\"}$(kip_ask_fields),{\"name\":\"body\",\"type\":\"textarea\",\"label\":\"PR body\",\"remember\":false,\"placeholder\":\"Leave empty to use the template\",\"description\":\"Write the body yourself (Markdown). When filled it replaces the template and its questions.\"}$labels_field,{\"name\":\"opts\",\"type\":\"flags\",\"label\":\"Options\",\"options\":[{\"name\":\"draft\",\"label\":\"Open as draft\",\"default\":true},{\"name\":\"no_pr\",\"label\":\"Skip the pull request\",\"default\":false}]},{\"name\":\"scope\",\"type\":\"text\",\"label\":\"Scope\",\"group\":\"Advanced\",\"description\":\"Monorepo scope for the generated message.\"},{\"name\":\"adv\",\"type\":\"flags\",\"label\":\"Hooks\",\"group\":\"Advanced\",\"options\":[{\"name\":\"no_verify\",\"label\":\"Skip git hooks\",\"default\":false}]}],\"chips\":[{\"id\":\"preview\",\"label\":\"Preview body\",\"icon\":\"eye\",\"description\":\"Render the template with your answers\"}]}"
+            again=false
+            while true; do
+                kip_read
+                if kip_is_type back; then again=true; break; fi
+                if kip_is_type chip; then
+                    title=$(kip_get title); kip_ask_answers
+                    if [ -n "$(kip_get body | tr -d '[:space:]')" ]; then
+                        KIP_BODY=$(kip_get body)
+                    else
+                        kip_expand fill "$(kip_static "$template" "${title:-<commit message>}" "$(get_ticket_url "$(kip_get branch)")" "$(kip_get branch)" "$(get_ticket_prefix "$(kip_get branch)")")"
+                    fi
+                    kip_emit "{\"kip\":1,\"type\":\"chip_result\",\"chip\":\"preview\",\"state\":\"success\",\"title\":\"Body preview\",\"text\":\"$(kip_esc "${KIP_BODY:-_(empty body)_}")\"}"
+                    continue
+                fi
+                BRANCH_NAME=$(kip_get branch)
+                if [ -z "$BRANCH_NAME" ] || ! git check-ref-format --branch "$BRANCH_NAME" > /dev/null 2>&1; then
+                    kip_invalid ship branch "That is not a valid branch name."; continue
+                fi
+                if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+                    kip_invalid ship branch "A branch called $BRANCH_NAME already exists."; continue
+                fi
+                break
+            done
+            [ "$again" = true ] && continue
+            break
+        done
+
+        CUSTOM_MESSAGE=$(kip_get message); SCOPE=$(kip_get scope); title=$(kip_get title)
+        local custom_body; custom_body=$(kip_get body)
+        kip_ask_answers
+        local -a pr_labels=()
+        kip_array labels; pr_labels=("${KIP_ARR[@]}")
+        local draft=false; kip_flag draft && draft=true
+        kip_flag no_pr && NO_PR=true
+        kip_flag no_verify && NO_VERIFY=true
+        local -a files=()
+        mapfile -t files <<< "$KIP_INCLUDED"
+
+        # --- 3. branch, commit, push, PR ---
+        kip_progress "Working…"
+        local pr_item=',{"id":"pr","label":"Open the pull request"}'; [ "$NO_PR" = true ] && pr_item=""
+        kip_emit "{\"kip\":1,\"type\":\"steps\",\"id\":\"run\",\"title\":\"Shipping it\",\"items\":[{\"id\":\"stash\",\"label\":\"Park local changes\"},{\"id\":\"sync\",\"label\":\"Sync the base branch\"},{\"id\":\"branch\",\"label\":\"Create the branch\"},{\"id\":\"restore\",\"label\":\"Restore local changes\"},{\"id\":\"stage\",\"label\":\"Stage the files\"},{\"id\":\"commit\",\"label\":\"Commit\"},{\"id\":\"push\",\"label\":\"Push to origin\"},{\"id\":\"quiver\",\"label\":\"Add to the quiver\"}$pr_item]}"
+        local out
+        STASH_PUSHED=false
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+            git stash push -u -m "marry_temp_stash" > /dev/null 2>&1 || kip_fail run stash "Could not stash your changes" "Nothing was changed."
+            STASH_PUSHED=true; kip_step run stash success
+        else
+            kip_step run stash skipped "nothing tracked to park"
+        fi
+
+        if is_fresh; then
+            kip_step run sync success "already up to date"
+        else
+            kip_step run sync running
+            if ! out=$(git fresh 2>&1); then
+                abort; kip_emit "{\"kip\":1,\"type\":\"markdown\",\"text\":\"$(kip_esc "$(kip_code "$out" 20)")\"}"
+                kip_fail run sync "Could not sync the base branch" "Your changes were restored on $ORIGINAL_BRANCH."
+            fi
+            kip_step run sync success
+        fi
+
+        if ! out=$(git checkout -b "$BRANCH_NAME" 2>&1); then
+            abort; kip_emit "{\"kip\":1,\"type\":\"markdown\",\"text\":\"$(kip_esc "$(kip_code "$out" 20)")\"}"
+            kip_fail run branch "Could not create $BRANCH_NAME" "Your changes were restored on $ORIGINAL_BRANCH."
+        fi
+        kip_step run branch success "$BRANCH_NAME"
+
+        if [ "$STASH_PUSHED" = true ]; then
+            if ! git stash pop > /dev/null 2>&1; then
+                abort; kip_fail run restore "Could not restore your changes" "Check git stash list: your work is in the stash."
+            fi
+            STASH_PUSHED=false; kip_step run restore success
+        else
+            kip_step run restore skipped
+        fi
+
+        # The table is the source of truth: unstage everything, then add exactly the chosen files.
+        git reset -q > /dev/null 2>&1
+        git add -A -- "${files[@]}" > /dev/null 2>&1
+        if git diff --cached --quiet; then
+            abort; kip_fail run stage "Nothing was staged" "Your changes are back on $ORIGINAL_BRANCH."
+        fi
+        kip_step run stage success "${#files[@]} files"
+
+        local verify_flag=""; [ "$NO_VERIFY" = true ] && verify_flag="--no-verify"
+        if [ -n "$CUSTOM_MESSAGE" ]; then
+            out=$(git commit $verify_flag -m "$CUSTOM_MESSAGE" 2>&1)
+        else
+            local scope_flag=(); [ -n "$SCOPE" ] && scope_flag=(-s "$SCOPE")
+            out=$(git cbn "${scope_flag[@]}" $verify_flag 2>&1)
+        fi
+        if [ $? -ne 0 ]; then
+            abort; kip_emit "{\"kip\":1,\"type\":\"markdown\",\"text\":\"$(kip_esc "$(kip_code "$out" 30)")\"}"
+            kip_fail run commit "The commit failed" "Your changes were restored on $ORIGINAL_BRANCH."
+        fi
+        local commit_msg=$(git log -1 --pretty=%B | head -n1)
+        kip_step run commit success "$commit_msg"
+
+        kip_step run push running "${push_user:+as $push_user}"
+        if ! out=$(git push -u origin "$BRANCH_NAME" 2>&1); then
+            kip_emit "{\"kip\":1,\"type\":\"markdown\",\"text\":\"$(kip_esc "$(kip_code "$out" 20)")\"}"
+            kip_step run push error
+            kip_done error "Push failed" "Your commit is safe on $BRANCH_NAME. Retry with: git push -u origin $BRANCH_NAME"
+            exit 1
+        fi
+        kip_step run push success
+
+        if git config --global --get alias.quiver > /dev/null 2>&1 && git quiver -a "$BRANCH_NAME" > /dev/null 2>&1; then
+            kip_step run quiver success
+        else
+            kip_step run quiver skipped "git quiver not installed"
+        fi
+
+        local copy="{\"type\":\"copy\",\"label\":\"Copy branch name\",\"value\":\"$(kip_esc "$BRANCH_NAME")\"}"
+        if [ "$NO_PR" = true ]; then
+            kip_done success "Branch pushed" "$BRANCH_NAME is on origin. No PR was requested." "$copy"
+            exit 0
+        fi
+        if ! command -v gh > /dev/null 2>&1; then
+            kip_step run pr skipped "gh not installed"
+            kip_done warning "Pushed, but no PR" "The GitHub CLI (gh) is not installed. $BRANCH_NAME is on origin." "$copy"
+            exit 0
+        fi
+
+        [ -z "${title//[[:space:]]/}" ] && title=$commit_msg
+        local prefix=$(get_ticket_prefix "$BRANCH_NAME") ticket_url=$(get_ticket_url "$BRANCH_NAME")
+        local body
+        if [ -n "${custom_body//[[:space:]]/}" ]; then
+            body=$custom_body
+        else
+            kip_expand fill "$(kip_static "$template" "$title" "$ticket_url" "$BRANCH_NAME" "$prefix")"
+            body=$KIP_BODY
+        fi
+        local base=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||"); base=${base:-main}
+        local lab rc
+        kip_step run pr running
+        if kip_pr_ok; then
+            local -a args=(create --force --title "$title" --body "$body" --base "$base")
+            [ "$draft" = true ] && args+=(--draft)
+            if [ ${#pr_labels[@]} -gt 0 ]; then
+                for lab in "${pr_labels[@]}"; do args+=(--label "$lab"); done
+            else
+                args+=(--no-labels)
+            fi
+            out=$(git pr "${args[@]}" 2>&1); rc=$?
+        else
+            local -a dflag=(); [ "$draft" = true ] && dflag=(--draft)
+            out=$(gh pr create "${dflag[@]}" --title "$title" --body "$body" --base "$base" 2>&1); rc=$?
+            if [ $rc -eq 0 ] && [ ${#pr_labels[@]} -gt 0 ]; then
+                local -a largs=(); for lab in "${pr_labels[@]}"; do largs+=(--add-label "$lab"); done
+                gh pr edit "$BRANCH_NAME" "${largs[@]}" > /dev/null 2>&1
+            fi
+        fi
+        if [ $rc -ne 0 ]; then
+            kip_emit "{\"kip\":1,\"type\":\"markdown\",\"text\":\"$(kip_esc "$(kip_code "$out" 20)")\"}"
+            kip_step run pr error
+            kip_done warning "Pushed, but the PR failed" "$BRANCH_NAME is on origin. Create the PR later with: git pr create" "$copy"
+            exit 0
+        fi
+        local url=$(gh pr view --json url --jq .url 2>/dev/null)
+        kip_step run pr success "$url"
+        local acts=$copy
+        [[ "$url" =~ ^https?:// ]] && acts="{\"type\":\"open_url\",\"label\":\"Open the PR\",\"url\":\"$(kip_esc "$url")\"},$copy"
+        kip_done success "Branch pushed and PR opened" "$commit_msg" "$acts"
+        exit 0
+    }
+
     # --- Parse args ---
 
     BRANCH_NAME=""
@@ -855,6 +1387,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     SCOPE=""
     NO_PR=false
     NO_VERIFY=false
+    KIP=false
     ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
     while [ "$#" -gt 0 ]; do
@@ -870,11 +1403,15 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             -f|--force)    FORCE_PUSH=true; shift;;
             --no-pr)       NO_PR=true; shift;;
             --no-verify)   NO_VERIFY=true; shift;;
+            --kip)         KIP=true; shift;;
             *)
                 echo -e "${RED}Unknown: $1${NC}"
                 show_help; exit 1;;
         esac
     done
+
+    # KIP mode (Kai): the whole flow is driven by protocol messages.
+    if [ "$KIP" = true ]; then kip_main; exit 0; fi
 
     # Guided mode (master switch marry.guided, default on). Asks for whatever
     # was not supplied on the command line. Disable with:

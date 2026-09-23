@@ -14,8 +14,8 @@
     },
     {
       "name": "marry",
-      "version": "1.5.1",
-      "description": "Create branch, commit, push, and open PR — guided mode, diff browser, delegates PR to the pr extension"
+      "version": "1.6.0",
+      "description": "Create branch, commit, push, and open PR — guided mode, diff browser, delegates PR to the pr extension; --kip for Kai"
     },
     {
       "name": "torch",
@@ -34,8 +34,8 @@
     },
     {
       "name": "quiver",
-      "version": "1.1.0",
-      "description": "Interactive branch manager with favorites and auto-stash"
+      "version": "2.3.0",
+      "description": "Interactive branch manager — fullscreen picker (paging/filter), Enter switches, Tab runs commands; --kip for Kai"
     },
     {
       "name": "hotfix",
@@ -54,8 +54,8 @@
     },
     {
       "name": "pr",
-      "version": "2.0.1",
-      "description": "Create/list PRs — template body and interactive label multi-select"
+      "version": "2.1.0",
+      "description": "Create/list PRs — template body and interactive label multi-select; --kip for Kai"
     },
     {
       "name": "wip",

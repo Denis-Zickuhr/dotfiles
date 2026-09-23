@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_CONTENT=$(cat <<'EOF'
-    VERSION="2.0.1"
+    VERSION="2.1.0"
     GREEN="\033[0;32m"; YELLOW="\033[1;33m"; CYAN="\033[0;36m"; RED="\033[0;31m"; GRAY="\033[90m"; NC="\033[0m"
 
     show_help() {
@@ -11,10 +11,15 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         echo "  git pr                 Show/create PR for the current branch"
         echo "  git pr create          Create a PR (template + optional labels)"
         echo "  git pr -a, --all       List all PRs authored by you"
+        echo "  git pr labels          List the repo labels, most-used first"
+        echo "  git pr --kip           Speak KIP (Kai Interface Protocol) instead of prompting"
         echo ""
         echo -e "${YELLOW}Options:${NC}"
         echo "  -t, --title <msg>      PR title (default: last commit subject)"
         echo "  -b, --base <branch>    Base branch (default: repo default)"
+        echo "      --body <text>      PR body (skips the template)"
+        echo "      --draft            Open the PR as a draft"
+        echo "  -l, --label <name>     Add a label (repeatable; skips the label picker)"
         echo "  --no-labels            Skip the label step"
         echo "  -f, --force            No prompts (accept defaults)"
         echo "  -h, --help             Show help"
@@ -127,6 +132,20 @@ SCRIPT_CONTENT=$(cat <<'EOF'
     usage_count() {
         local f=$(usage_file)
         grep -F -- "	$1" "$f" 2>/dev/null | head -1 | cut -f1
+    }
+
+    # Repo labels, most-used first (local usage counts), then by name.
+    # Populates the global LABEL_LIST array.
+    labels_by_usage() {
+        LABEL_LIST=()
+        local l
+        while IFS= read -r l; do
+            [ -n "$l" ] && LABEL_LIST+=("$l")
+        done < <(
+            gh label list --limit 200 --json name --jq '.[].name' 2>/dev/null | while IFS= read -r l; do
+                [ -n "$l" ] && printf '%s\t%s\n' "$(usage_count "$l" 2>/dev/null || echo 0)" "$l"
+            done | sort -t$'\t' -k1,1nr -k2,2 | cut -f2
+        )
     }
 
     # ---------- label multi-select (fullscreen picker, nav-style) ----------
@@ -306,8 +325,12 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local pr_title="${TITLE:-$commit_msg}"
         local prefix=$(get_ticket_prefix "$branch")
         local ticket_url=$(get_ticket_url "$branch")
-        local template=$(get_pr_template)
-        local pr_body=$(render_template "$template" "$pr_title" "$ticket_url" "$branch" "$prefix")
+        local pr_body
+        if [ "$BODY_SET" = true ]; then
+            pr_body=$BODY
+        else
+            pr_body=$(render_template "$(get_pr_template)" "$pr_title" "$ticket_url" "$branch" "$prefix")
+        fi
 
         echo -e "${CYAN}Creating PR...${NC}"
         echo -e "  ${GRAY}Title: $pr_title${NC}"
@@ -330,16 +353,23 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         local base=${BASE:-$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")}
         base=${base:-main}
 
-        if ! gh pr create --title "$pr_title" --body "$pr_body" --base "$base" >/dev/null 2>&1; then
+        local draft_flag=()
+        [ "$DRAFT" = true ] && draft_flag=(--draft)
+        PR_ERR=$(gh pr create "${draft_flag[@]}" --title "$pr_title" --body "$pr_body" --base "$base" 2>&1 < /dev/null)
+        if [ $? -ne 0 ]; then
             echo -e "${RED}✗ PR creation failed.${NC}"
+            [ -n "$PR_ERR" ] && echo -e "${GRAY}$(printf '%s\n' "$PR_ERR" | head -n 3)${NC}"
             echo -e "${GRAY}Create manually: gh pr create${NC}"
             return 1
         fi
+        PR_ERR=""
         local pr_url=$(gh pr view --json url --jq '.url' 2>/dev/null)
         echo -e "${GREEN}✔ PR created: ${pr_url}${NC}"
 
-        # Optional label step
-        if [ "$NO_LABELS" != true ]; then
+        # Labels: explicit --label wins, otherwise the optional picker
+        if [ ${#LABELS[@]} -gt 0 ]; then
+            apply_labels "$branch" "${LABELS[@]}"
+        elif [ "$NO_LABELS" != true ]; then
             echo ""
             local yn="y"
             [ "$FORCE" != true ] && read -p "Add labels? [Y/n] " yn < /dev/tty
@@ -432,10 +462,308 @@ SCRIPT_CONTENT=$(cat <<'EOF'
         esac
     }
 
+    # ---------- KIP mode (Kai Interface Protocol) ----------
+    # `--kip` talks JSON Lines instead of prompting on the terminal, so Kai can
+    # draw the flow as a native screen. fd 3 is the protocol channel (the real
+    # stdout); everything else printed to stdout goes to stderr (Kai's log), and
+    # Kai's answers arrive on fd 4 while child processes see an empty stdin.
+    # Self-contained on purpose: no `kai` binary, no jq.
+    kip_init() {
+        exec 3>&1 1>&2 4<&0 0</dev/null
+        shopt -u patsub_replacement 2>/dev/null
+    }
+
+    kip_esc() {
+        local s=$1
+        s=${s//\\/\\\\}; s=${s//\"/\\\"}
+        s=${s//$'\n'/\\n}; s=${s//$'\r'/\\r}; s=${s//$'\t'/\\t}
+        printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'
+    }
+
+    kip_emit() { printf '%s\n' "$1" >&3; }
+
+    kip_unesc() {
+        local v=$1
+        v=${v//\\\\/$'\001'}; v=${v//\\\"/\"}; v=${v//\\\//\/}
+        v=${v//\\n/$'\n'}; v=${v//\\t/$'\t'}; v=${v//\\r/$'\r'}; v=${v//$'\001'/\\}
+        printf '%s' "$v"
+    }
+
+    # String value of a key in the last answer.
+    kip_get() {
+        kip_unesc "$(printf '%s' "$KIP_RESP" | sed -n 's/.*"'"$1"'" *: *"\(\([^"\\]\|\\.\)*\)".*/\1/p')"
+    }
+
+    # Is the flag (a boolean inside a `flags` field) true in the last answer?
+    kip_flag() { [[ "$KIP_RESP" =~ \"$1\"\ *:\ *true ]]; }
+
+    # Strings of an array value (`multiple` list) into KIP_ARR.
+    kip_array() {
+        KIP_ARR=()
+        local rest=$KIP_RESP re='^[[:space:]]*"(([^"\\]|\\.)*)"[[:space:]]*,?(.*)$'
+        [[ "$rest" == *"\"$1\":["* ]] || return 0
+        rest=${rest#*"\"$1\":["}
+        while [[ "$rest" =~ $re ]]; do
+            KIP_ARR+=("$(kip_unesc "${BASH_REMATCH[1]}")")
+            rest=${BASH_REMATCH[3]}
+        done
+    }
+
+    # Is the last answer of this message type?
+    kip_is_type() { [[ "$KIP_RESP" =~ \"type\"\ *:\ *\"$1\" ]]; }
+
+    # Cancel (or a closed stdin) ends the program; KIP_ON_CANCEL can clean up first.
+    kip_cancel() {
+        [ -n "${KIP_ON_CANCEL:-}" ] && "$KIP_ON_CANCEL"
+        exit 130
+    }
+
+    kip_read() {
+        IFS= read -r -u 4 KIP_RESP || kip_cancel
+        kip_is_type cancel && kip_cancel
+        return 0
+    }
+
+    # kip_done <level> <title> [text] [actions-json]
+    kip_done() {
+        local acts=""; [ -n "${4:-}" ] && acts=",\"actions\":[$4]"
+        kip_emit "{\"kip\":1,\"type\":\"done\",\"level\":\"$1\",\"title\":\"$(kip_esc "$2")\",\"text\":\"$(kip_esc "${3:-}")\"$acts}"
+    }
+
+    kip_progress() {
+        kip_emit "{\"kip\":1,\"type\":\"progress\",\"value\":null,\"label\":\"$(kip_esc "$1")\",\"cancellable\":false}"
+    }
+
+    kip_invalid() {  # kip_invalid <prompt-id> <field> <message>
+        kip_emit "{\"kip\":1,\"type\":\"invalid\",\"id\":\"$1\",\"message\":\"$(kip_esc "$3")\",\"errors\":{\"$2\":\"$(kip_esc "$3")\"}}"
+    }
+
+    # ANSI-free, fence-safe tail of some output, as a Markdown code block.
+    kip_code() {
+        local out
+        out=$(printf '%s\n' "$1" | sed "s/$(printf '\033')\[[0-9;?]*[A-Za-z]//g" | tail -n "${2:-200}")
+        out=${out//\`\`\`/\'\'\'}
+        printf '%s' $'```\n'"$out"$'\n```'
+    }
+
+    # ---------- KIP: PR body template ----------
+    # Same template language as the terminal flow, but the {{ask}} tags become
+    # form fields instead of reading /dev/tty.
+
+    # {title} {ticket} {branch} {prefix} → values (no sed, so any text is safe)
+    kip_static() {
+        local t; t=$(printf '%b' "$1")
+        t=${t//\{title\}/$2}; t=${t//\{ticket\}/$3}; t=${t//\{branch\}/$4}; t=${t//\{prefix\}/$5}
+        printf '%s' "$t"
+    }
+
+    # Sets ASK_Q / ASK_D from one {{ask…}} tag.
+    kip_parse_ask() {
+        local re1='^\{\{ask:-"([^"]*)":"([^"]*)"\}\}$'
+        local re2='^\{\{ask:-([^:]*):"([^"]*)"\}\}$'
+        local re3='^\{\{ask:"([^"]*)"\}\}$'
+        TAG_Q=""; TAG_D=""
+        if   [[ "$1" =~ $re1 || "$1" =~ $re2 ]]; then TAG_D=${BASH_REMATCH[1]}; TAG_Q=${BASH_REMATCH[2]}
+        elif [[ "$1" =~ $re3 ]]; then TAG_Q=${BASH_REMATCH[1]}
+        fi
+    }
+
+    # kip_expand scan <text>  → fills ASK_Q[] / ASK_D[] with the template's questions
+    # kip_expand fill <text>  → KIP_BODY = text with ASK_A[] (or the default) in place of each tag
+    kip_expand() {
+        local mode=$1 text=$2 out="" line rest res tag n=0 ans
+        local re='\{\{ask[^}]*\}\}'
+        [ "$mode" = scan ] && { ASK_Q=(); ASK_D=(); }
+        while IFS= read -r line || [ -n "$line" ]; do
+            rest=$line; res=""
+            while [[ "$rest" =~ $re ]]; do
+                tag=${BASH_REMATCH[0]}
+                res+=${rest%%"$tag"*}
+                rest=${rest#*"$tag"}
+                kip_parse_ask "$tag"
+                if [ "$mode" = scan ]; then
+                    ASK_Q[n]=$TAG_Q; ASK_D[n]=$TAG_D
+                else
+                    ans=${ASK_A[n]:-$TAG_D}; res+=$ans
+                fi
+                n=$((n+1))
+            done
+            out+="$res$rest"$'\n'
+        done <<< "$text"
+        KIP_BODY=${out%$'\n'}
+    }
+
+    # One text field per {{ask}} question (ask_1, ask_2…). Never remembered:
+    # a description from the last PR does not belong in the next one.
+    kip_ask_fields() {
+        local i q out=""
+        for i in "${!ASK_Q[@]}"; do
+            q=${ASK_Q[i]:-Question $((i+1))}
+            out+=",{\"name\":\"ask_$((i+1))\",\"type\":\"textarea\",\"label\":\"$(kip_esc "$q")\",\"default\":\"$(kip_esc "${ASK_D[i]}")\",\"remember\":false}"
+        done
+        printf '%s' "$out"
+    }
+
+    # Reads the answers to the ask_N fields from the last response.
+    kip_ask_answers() {
+        local i; ASK_A=()
+        for i in "${!ASK_Q[@]}"; do ASK_A[i]=$(kip_get "ask_$((i+1))"); done
+    }
+
+    # ---------- KIP: git pr ----------
+
+    # Rows "number<TAB>state<TAB>url<TAB>title" → a `table` block (+ open_url actions).
+    kip_show_prs() {
+        local tid=$1 ttl=$2 rows=$3 num st url title json="" acts="" n=0
+        while IFS=$'\t' read -r num st url title; do
+            [ -z "$num" ] && continue
+            json+="${json:+,}{\"number\":\"#$(kip_esc "$num")\",\"state\":\"$(kip_esc "$st")\",\"title\":\"$(kip_esc "$title")\",\"url\":\"$(kip_esc "$url")\"}"
+            if [ "$n" -lt 3 ]; then
+                acts+="${acts:+,}{\"type\":\"open_url\",\"label\":\"Open #$(kip_esc "$num")\",\"url\":\"$(kip_esc "$url")\"}"
+            fi
+            n=$((n+1))
+        done <<< "$rows"
+        kip_emit "{\"kip\":1,\"type\":\"table\",\"id\":\"$tid\",\"title\":\"$(kip_esc "$ttl")\",\"columns\":[{\"key\":\"number\",\"label\":\"PR\"},{\"key\":\"state\",\"label\":\"State\"},{\"key\":\"title\",\"label\":\"Title\"},{\"key\":\"url\",\"label\":\"URL\"}],\"rows\":[$json]}"
+        KIP_ACTIONS=$acts
+    }
+
+    PR_ROWS_JQ='.[] | "\(.number)\t\(.state)\t\(.url)\t\(.title)"'
+
+    kip_main() {
+        kip_init
+        kip_emit "{\"kip\":1,\"type\":\"hello\",\"title\":\"git pr\",\"version\":\"$VERSION\"}"
+
+        if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+            kip_done error "Not in a git repository" "Run this command from a folder inside a git repository."
+            exit 1
+        fi
+        if ! command -v gh > /dev/null 2>&1; then
+            kip_done warning "GitHub CLI (gh) not installed" "Install it from https://cli.github.com/ and run this again." \
+                '{"type":"open_url","label":"Get the GitHub CLI","url":"https://cli.github.com/"}'
+            exit 0
+        fi
+
+        local branch=$(git rev-parse --abbrev-ref HEAD)
+        local main_branch=${BASE:-$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed "s|origin/||")}
+        main_branch=${main_branch:-main}
+
+        kip_progress "Looking for PRs on $branch…"
+        local existing action rows
+        existing=$(gh pr list --head "$branch" --json number,title,url,state --jq "$PR_ROWS_JQ" 2>/dev/null)
+        local default_action=create; [ -n "$existing" ] && default_action=branch
+
+        while true; do
+            kip_emit "{\"kip\":1,\"type\":\"prompt\",\"id\":\"mode\",\"title\":\"Pull requests\",\"description\":\"Repository: $(kip_esc "$(basename "$(git rev-parse --show-toplevel)")") · branch $(kip_esc "$branch")\",\"submit_label\":\"Continue\",\"fields\":[{\"name\":\"action\",\"type\":\"select\",\"label\":\"What do you want to do?\",\"required\":true,\"default\":\"$default_action\",\"options\":[{\"value\":\"create\",\"label\":\"Create a PR for this branch\",\"description\":\"title, body from the template, labels\"},{\"value\":\"branch\",\"label\":\"Show the PRs of this branch\"},{\"value\":\"all\",\"label\":\"List all PRs authored by me\"}]}]}"
+            kip_read
+            action=$(kip_get action)
+
+            case "$action" in
+                branch)
+                    if [ -z "$existing" ]; then
+                        kip_done warning "No PRs for $branch" "Pick “Create a PR” to open one."; exit 0
+                    fi
+                    kip_show_prs prs "PRs for $branch" "$existing"
+                    kip_done success "PRs for $branch" "" "$KIP_ACTIONS"; exit 0 ;;
+                all)
+                    kip_progress "Loading your PRs…"
+                    rows=$(gh pr list --author "@me" --limit 100 --json number,title,url,state --jq "$PR_ROWS_JQ" 2>/dev/null)
+                    if [ -z "$rows" ]; then kip_done info "No PRs" "You have no open PRs in this repository."; exit 0; fi
+                    kip_show_prs prs "PRs authored by you" "$rows"
+                    kip_done success "PRs authored by you" "" "$KIP_ACTIONS"; exit 0 ;;
+            esac
+
+            if [ "$branch" = "$main_branch" ]; then
+                kip_done warning "You are on $main_branch" "Switch to the branch you want to open a PR for."; exit 0
+            fi
+            kip_create "$branch" "$main_branch" "$existing" && return
+        done
+    }
+
+    # The create flow. Returns 1 when the user went Back (so the caller re-asks the mode).
+    kip_create() {
+        local branch=$1 main_branch=$2 existing=$3
+        local commit_msg=$(git log -1 --pretty=%B | head -n1)
+        local prefix=$(get_ticket_prefix "$branch") ticket_url=$(get_ticket_url "$branch")
+        local template=$(get_pr_template)
+        kip_expand scan "$(kip_static "$template" "$commit_msg" "$ticket_url" "$branch" "$prefix")"
+
+        kip_progress "Loading labels…"
+        labels_by_usage
+        local labels_field="" l opts=""
+        if [ ${#LABEL_LIST[@]} -gt 0 ]; then
+            for l in "${LABEL_LIST[@]}"; do opts+="${opts:+,}\"$(kip_esc "$l")\""; done
+            labels_field=",{\"name\":\"labels\",\"type\":\"list\",\"label\":\"Labels\",\"multiple\":true,\"searchable\":true,\"page_size\":10,\"description\":\"Most-used first\",\"options\":[$opts]}"
+        fi
+
+        local need_push=false push_flag=""
+        if ! git rev-parse --abbrev-ref '@{u}' > /dev/null 2>&1; then
+            need_push=true
+            push_flag=",{\"name\":\"push\",\"label\":\"Push the branch to origin first\",\"description\":\"It has no upstream yet\",\"default\":true}"
+        fi
+
+        local note=""
+        [ -n "$existing" ] && note="This branch already has an open PR."
+        kip_emit "{\"kip\":1,\"type\":\"prompt\",\"id\":\"create\",\"title\":\"New pull request\",\"description\":\"$(kip_esc "$branch → $main_branch. $note")\",\"submit_label\":\"Create PR\",\"back\":true,\"fields\":[{\"name\":\"title\",\"type\":\"text\",\"label\":\"Title\",\"required\":true,\"default\":\"$(kip_esc "$commit_msg")\",\"remember\":false}$(kip_ask_fields),{\"name\":\"body\",\"type\":\"textarea\",\"label\":\"PR body\",\"remember\":false,\"placeholder\":\"Leave empty to use the template\",\"description\":\"Write the body yourself (Markdown). When filled it replaces the template and its questions.\"}$labels_field,{\"name\":\"base\",\"type\":\"text\",\"label\":\"Base branch\",\"required\":true,\"default\":\"$(kip_esc "$main_branch")\",\"group\":\"Advanced\"},{\"name\":\"opts\",\"type\":\"flags\",\"label\":\"Options\",\"group\":\"Advanced\",\"options\":[{\"name\":\"draft\",\"label\":\"Open as draft\",\"default\":false}$push_flag]}],\"chips\":[{\"id\":\"preview\",\"label\":\"Preview body\",\"icon\":\"eye\",\"description\":\"Render the template with your answers\",\"requires\":[\"title\"]}]}"
+
+        local title base
+        while true; do
+            kip_read
+            if kip_is_type back; then return 1; fi
+            if kip_is_type chip; then
+                title=$(kip_get title); kip_ask_answers
+                if [ -n "$(kip_get body | tr -d '[:space:]')" ]; then
+                    KIP_BODY=$(kip_get body)
+                else
+                    kip_expand fill "$(kip_static "$template" "$title" "$ticket_url" "$branch" "$prefix")"
+                fi
+                kip_emit "{\"kip\":1,\"type\":\"chip_result\",\"chip\":\"preview\",\"state\":\"success\",\"title\":\"Body preview\",\"text\":\"$(kip_esc "${KIP_BODY:-_(empty body)_}")\"}"
+                continue
+            fi
+            title=$(kip_get title); base=$(kip_get base)
+            if [ -z "${title//[[:space:]]/}" ]; then kip_invalid create title "The title can't be empty."; continue; fi
+            if [ -z "${base//[[:space:]]/}" ]; then kip_invalid create base "Pick the branch the PR targets."; continue; fi
+            break
+        done
+
+        kip_ask_answers
+        local custom_body; custom_body=$(kip_get body)
+        if [ -n "${custom_body//[[:space:]]/}" ]; then
+            KIP_BODY=$custom_body
+        else
+            kip_expand fill "$(kip_static "$template" "$title" "$ticket_url" "$branch" "$prefix")"
+        fi
+        kip_array labels
+        LABELS=("${KIP_ARR[@]}")
+        TITLE=$title; BASE=$base; BODY=$KIP_BODY; BODY_SET=true; FORCE=true; NO_LABELS=true
+        DRAFT=false; kip_flag draft && DRAFT=true
+
+        kip_progress "Creating the pull request…"
+        if [ "$need_push" = true ] && kip_flag push; then
+            local push_out
+            if ! push_out=$(git push -u origin "$branch" 2>&1); then
+                kip_emit "{\"kip\":1,\"type\":\"markdown\",\"text\":\"$(kip_esc "$(kip_code "$push_out" 20)")\"}"
+                kip_done error "Push failed" "Nothing was created. Fix the push error above and run this again."
+                exit 1
+            fi
+        fi
+
+        if create_pr; then
+            local url=$(gh pr view --json url --jq .url 2>/dev/null)
+            local acts="{\"type\":\"copy\",\"label\":\"Copy URL\",\"value\":\"$(kip_esc "$url")\"}"
+            [[ "$url" =~ ^https?:// ]] && acts="{\"type\":\"open_url\",\"label\":\"Open the PR\",\"url\":\"$(kip_esc "$url")\"},$acts"
+            local ltxt=""; [ ${#LABELS[@]} -gt 0 ] && ltxt=" Labels: ${LABELS[*]}."
+            kip_done success "PR created" "$title.$ltxt" "$acts"
+            exit 0
+        fi
+        kip_done error "PR creation failed" "${PR_ERR:-See the log for details.}"
+        exit 1
+    }
+
     # ---------- args ----------
 
     CMD="auto"
     TITLE=""; BASE=""; LIST_ALL=false; NO_LABELS=false; FORCE=false
+    BODY=""; BODY_SET=false; DRAFT=false; LABELS=(); PR_ERR=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -443,6 +771,11 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             -v|--version)  echo "git pr v$VERSION"; exit 0;;
             create)        CMD="create"; shift;;
             setup|--setup) CMD="setup"; shift;;
+            labels)        CMD="labels"; shift;;
+            --kip)         CMD="kip"; shift;;
+            --body)        BODY="$2"; BODY_SET=true; shift 2;;
+            --draft)       DRAFT=true; shift;;
+            -l|--label)    LABELS+=("$2"); shift 2;;
             -a|--all)      LIST_ALL=true; CMD="list"; shift;;
             -t|--title)    TITLE="$2"; shift 2;;
             -b|--base)     BASE="$2"; shift 2;;
@@ -451,6 +784,8 @@ SCRIPT_CONTENT=$(cat <<'EOF'
             *)             echo -e "${RED}Unknown: $1${NC}"; show_help; exit 1;;
         esac
     done
+
+    if [ "$CMD" = kip ]; then kip_main; exit 0; fi
 
     if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
         echo -e "${RED}Error: Not in a git repository.${NC}"; exit 1
@@ -467,6 +802,7 @@ SCRIPT_CONTENT=$(cat <<'EOF'
 
     case "$CMD" in
         create) create_pr;;
+        labels) labels_by_usage; printf '%s\n' "${LABEL_LIST[@]}";;
         list)   list_prs;;
         auto)   list_prs;;
     esac

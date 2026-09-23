@@ -1,48 +1,183 @@
 {
-  "project_name": "Dotfiles",
-  "icon": "terminal",
-  "commands": [
-    { "name": "Ver README.md", "folder": "Sobre", "type": "shell",
-      "command": "cat README.md",
-      "working_dir": "{{PROJECT_PATH}}" },
-
-    { "name": "Instalar extensions (todas)", "folder": "Instalar", "type": "shell",
-      "command": "for f in extensions/*/install; do echo \"==> $f\"; bash \"$f\"; done",
-      "working_dir": "{{PROJECT_PATH}}" },
-    { "name": "Instalar extension (uma)", "folder": "Instalar", "type": "shell",
-      "command": "bash \"extensions/{{EXTENSION}}/install\"",
-      "working_dir": "{{PROJECT_PATH}}",
-      "params": [
-        { "name": "EXTENSION", "label": "Nome da extension (ctx, pr, marry, quiver, sync, shh, ...)", "type": "text", "default": "" }
-      ] },
-    { "name": "Instalar nav (reinstala no ~/.bashrc)", "folder": "Instalar", "type": "shell",
-      "command": "sed -i '\\|bashrc/nav|d' ~/.bashrc; echo 'source \"{{PROJECT_PATH}}/bashrc/nav\"' >> ~/.bashrc; echo 'nav reinstalado em ~/.bashrc (inclui autocomplete). Abra um novo terminal (ou rode: source ~/.bashrc).'",
-      "working_dir": "{{PROJECT_PATH}}" },
-
-    { "name": "nav — listar aliases de pasta", "folder": "Nav", "type": "shell",
-      "command": "bash -c \"source bashrc/nav && nav list\"", "working_dir": "{{PROJECT_PATH}}" },
-    { "name": "nav — definir alias", "folder": "Nav", "type": "shell",
-      "command": "bash -c \"source bashrc/nav && nav set --alias {{ALIAS}} --path {{CAMINHO}}\"",
-      "working_dir": "{{PROJECT_PATH}}",
-      "params": [
-        { "name": "ALIAS", "label": "Nome do alias", "type": "text", "default": "" },
-        { "name": "CAMINHO", "label": "Caminho da pasta", "type": "text", "default": "" }
-      ] },
-    { "name": "nav — remover alias", "folder": "Nav", "type": "shell",
-      "command": "bash -c \"source bashrc/nav && nav unset {{ALIAS}}\"",
-      "working_dir": "{{PROJECT_PATH}}",
-      "params": [
-        { "name": "ALIAS", "label": "Nome do alias", "type": "text", "default": "" }
-      ] },
-    { "name": "nav — exportar aliases", "folder": "Nav", "type": "shell",
-      "command": "bash -c \"source bashrc/nav && nav export\"", "working_dir": "{{PROJECT_PATH}}" },
-    { "name": "nav — importar aliases", "folder": "Nav", "type": "shell",
-      "command": "bash -c \"source bashrc/nav && nav import {{ARQUIVO}}\"",
-      "working_dir": "{{PROJECT_PATH}}",
-      "params": [
-        { "name": "ARQUIVO", "label": "Arquivo de aliases", "type": "file", "default": "" }
-      ] },
-    { "name": "nav — ajuda", "folder": "Nav", "type": "shell",
-      "command": "bash -c \"source bashrc/nav && nav help\"", "working_dir": "{{PROJECT_PATH}}" }
-  ]
+    "commands": [
+        {
+            "command": "cat README.md",
+            "folder_id": "f_proj_dotfiles_sf_0",
+            "id": "c_f_proj_dotfiles_0",
+            "name": "Ver README.md",
+            "type": "command"
+        },
+        {
+            "command": "for f in extensions/*/install; do echo \"==> $f\"; bash \"$f\"; done",
+            "folder_id": "f_proj_dotfiles_sf_1",
+            "id": "c_f_proj_dotfiles_1",
+            "name": "Instalar extensions (todas)",
+            "type": "command"
+        },
+        {
+            "command": "bash \"extensions/{{EXTENSION}}/install\"",
+            "folder_id": "f_proj_dotfiles_sf_1",
+            "id": "c_f_proj_dotfiles_2",
+            "name": "Instalar extension (uma)",
+            "params": [
+                {
+                    "label": "Nome da extension (ctx, pr, marry, quiver, sync, shh, ...)",
+                    "name": "EXTENSION",
+                    "type": "text"
+                }
+            ],
+            "type": "command"
+        },
+        {
+            "command": "sed -i '\\|bashrc/nav|d' ~/.bashrc; echo 'source \"{{PROJECT_PATH}}/bashrc/nav\"' >> ~/.bashrc; echo 'nav reinstalado em ~/.bashrc (inclui autocomplete). Abra um novo terminal (ou rode: source ~/.bashrc).'",
+            "folder_id": "f_proj_dotfiles_sf_1",
+            "id": "c_f_proj_dotfiles_3",
+            "name": "Instalar nav (reinstala no ~/.bashrc)",
+            "type": "command"
+        },
+        {
+            "command": "bash -c \"source bashrc/nav && nav list\"",
+            "folder_id": "f_proj_dotfiles_sf_2",
+            "id": "c_f_proj_dotfiles_4",
+            "name": "nav — listar aliases de pasta",
+            "type": "command"
+        },
+        {
+            "command": "bash -c \"source bashrc/nav && nav set --alias {{ALIAS}} --path {{CAMINHO}}\"",
+            "folder_id": "f_proj_dotfiles_sf_2",
+            "id": "c_f_proj_dotfiles_5",
+            "name": "nav — definir alias",
+            "params": [
+                {
+                    "label": "Nome do alias",
+                    "name": "ALIAS",
+                    "type": "text"
+                },
+                {
+                    "label": "Caminho da pasta",
+                    "name": "CAMINHO",
+                    "type": "text"
+                }
+            ],
+            "type": "command"
+        },
+        {
+            "command": "bash -c \"source bashrc/nav && nav unset {{ALIAS}}\"",
+            "folder_id": "f_proj_dotfiles_sf_2",
+            "id": "c_f_proj_dotfiles_6",
+            "name": "nav — remover alias",
+            "params": [
+                {
+                    "label": "Nome do alias",
+                    "name": "ALIAS",
+                    "type": "text"
+                }
+            ],
+            "type": "command"
+        },
+        {
+            "command": "bash -c \"source bashrc/nav && nav export\"",
+            "folder_id": "f_proj_dotfiles_sf_2",
+            "id": "c_f_proj_dotfiles_7",
+            "name": "nav — exportar aliases",
+            "type": "command"
+        },
+        {
+            "command": "bash -c \"source bashrc/nav && nav import {{ARQUIVO}}\"",
+            "folder_id": "f_proj_dotfiles_sf_2",
+            "id": "c_f_proj_dotfiles_8",
+            "name": "nav — importar aliases",
+            "params": [
+                {
+                    "label": "Arquivo de aliases",
+                    "name": "ARQUIVO",
+                    "type": "file"
+                }
+            ],
+            "type": "command"
+        },
+        {
+            "command": "bash -c \"source bashrc/nav && nav help\"",
+            "folder_id": "f_proj_dotfiles_sf_2",
+            "id": "c_f_proj_dotfiles_9",
+            "name": "nav — ajuda",
+            "type": "command"
+        },
+        {
+            "cli_path": "quiver",
+            "cli_working_dir": "invocation",
+            "command": "git quiver --kip",
+            "folder_id": "f_proj_dotfiles_sf_3",
+            "icon": "git-branch",
+            "id": "c_f_proj_dotfiles_10",
+            "kip": true,
+            "kip_auto_close": true,
+            "kip_auto_close_delay_sec": 1,
+            "kip_last_values": {
+                "pick/branch": "main"
+            },
+            "kip_window": true,
+            "name": "quiver",
+            "type": "command"
+        },
+        {
+            "cli_path": "marry",
+            "cli_working_dir": "invocation",
+            "command": "git marry --kip",
+            "folder_id": "f_proj_dotfiles_sf_3",
+            "icon": "git-pull-request",
+            "id": "c_f_proj_dotfiles_11",
+            "kip": true,
+            "kip_auto_close": true,
+            "kip_auto_close_delay_sec": 0,
+            "kip_window": true,
+            "name": "marry",
+            "type": "command"
+        },
+        {
+            "cli_path": "pr",
+            "cli_working_dir": "invocation",
+            "command": "git pr",
+            "folder_id": "f_proj_dotfiles_sf_3",
+            "icon": "git-pull-request",
+            "id": "c_f_proj_dotfiles_12",
+            "kip": true,
+            "kip_auto_close": true,
+            "kip_auto_close_delay_sec": 0,
+            "kip_window": true,
+            "name": "pr",
+            "type": "command"
+        }
+    ],
+    "folders": [
+        {
+            "id": "f_proj_dotfiles_sf_0",
+            "name": "Sobre",
+            "order": 0,
+            "parent_id": "f_proj_dotfiles"
+        },
+        {
+            "id": "f_proj_dotfiles_sf_1",
+            "name": "Instalar",
+            "order": 1,
+            "parent_id": "f_proj_dotfiles"
+        },
+        {
+            "id": "f_proj_dotfiles_sf_2",
+            "name": "Nav",
+            "order": 2,
+            "parent_id": "f_proj_dotfiles"
+        },
+        {
+            "cli_path": "git",
+            "id": "f_proj_dotfiles_sf_3",
+            "name": "Git",
+            "order": 3,
+            "parent_id": "f_proj_dotfiles"
+        }
+    ],
+    "kai_export": {
+        "scope": "folder",
+        "version": 1
+    }
 }

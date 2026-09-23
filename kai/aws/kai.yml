@@ -1,0 +1,26 @@
+commands:
+  - command: ". ./dynamodb-explorer.sh"
+    description: "List the tables, pick one and browse its items (paged scan, filter), then view, create, edit, duplicate or delete items. Uses the aws CLI (or awslocal) and jq; the profile, region, expected account, endpoint, page size and read-only mode come from this project's variables."
+    folder_id: "f_proj_aws_sf_0"
+    icon: "table"
+    id: "c_f_proj_aws_0"
+    kip: true
+    name: "Table explorer"
+    type: "command"
+env_vars:
+  AWS_ACCOUNT_ID: ""
+  AWS_CLI: "awslocal"
+  AWS_PROFILE: "default"
+  AWS_REGION: "us-east-1"
+  DYNAMODB_ENDPOINT: ""
+  DYNAMODB_PAGE_SIZE: "25"
+  DYNAMODB_READ_ONLY: "false"
+folders:
+  - icon: "database"
+    id: "f_proj_aws_sf_0"
+    name: "DynamoDB"
+    order: 0
+    parent_id: "f_proj_aws"
+kai_export:
+  scope: "folder"
+  version: 1
