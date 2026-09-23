@@ -18,7 +18,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Denis-Zickuhr/dotfiles/main/in
 | torch | Burn local branches except protected ones |
 | rebirth | Hard-reset current branch to match origin |
 | cbn | Commit message auto-generated from branch name |
-| quiver | Interactive branch manager with stash and commands |
+| quiver | Interactive branch manager: fullscreen picker, Enter switches, Tab runs commands |
 | hotfix | Cherry-pick commits into multiple targets with PR links |
 | copen | Open modified files in your editor |
 | fresh | Switch to main and sync with remote |

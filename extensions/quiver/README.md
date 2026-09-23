@@ -26,9 +26,41 @@ git quiver [index | flags]
 
 ## Interactive Mode
 
+Running `git quiver` opens a **fullscreen picker** (nav-style): a dynamic,
+paginated list of your branches with type-to-filter.
+
+| Key | Action |
+|-----|--------|
+| `↑`/`↓` or `j`/`k` | Move selection |
+| `←`/`→` or `h`/`l` | Change page |
+| type | Filter branches |
+| `Enter` | Switch to the highlighted branch |
+| `Tab` | Open **action mode** for the highlighted branch |
+| `a` | Add current branch to the quiver |
+| `Esc` / `q` | Quit |
+
+### Action mode
+
+`Tab` opens a sub-picker listing the commands that can run against the
+highlighted branch:
+
+| Command | Runs |
+|---------|------|
+| `ctx` | Branch context (ticket + PR status) |
+| `pr` | Show/create pull request |
+| `hotfix` | Cherry-pick into targets (prompts for targets) |
+| `sync` | Sync with upstream (rebase) |
+
+Pick one with `↑`/`↓` and `Enter` to run it; `Esc`/`Tab` goes back.
+
+> **Why Tab and not Ctrl+Enter?** Standard terminals send the *same byte* for
+> `Enter` and `Ctrl+Enter`, so they can't be told apart in a TUI. `Tab` is used
+> instead because it's unambiguous.
+
+### Direct switching
+
 | Input | Action |
 |-------|--------|
-| `git quiver` | Show quiver and select a branch to switch to |
 | `git quiver <n>` | Switch directly to branch at index `n` |
 | `git quiver f` | Switch to the default (main) branch |
 
