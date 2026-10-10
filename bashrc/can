@@ -1,0 +1,711 @@
+#!/bin/bash
+# can - a tiny cleaner for junk data
+# Source it from ~/.bashrc; it exposes a single `can` function.
+#
+#   can                 pick a group (docker, system, files), then what to clean
+#   can docker          jump straight into a group
+#   can status          show what is reclaimable, change nothing
+#   can -y              clean the safe defaults of every group, no questions
+#   can -y -a           clean everything, including destructive items
+#   can stats           how much space can has freed so far
+#
+# Needs bash 4.3+ (namerefs). Docker group needs a reachable docker daemon.
+
+CAN_VERSION="2.1.0"
+
+# ─── Registry ─────────────────────────────────────────────────────────────────
+# Groups: id|Label|short description (shown in the first menu)
+#
+# Each group is an array `__can_<group>_tools`, one line per tool:
+#     id|label|on-by-default|destructive|mode
+#   mode "run"     cleans on its own, safe to run with -y
+#   mode "manual"  only ever runs when picked by hand (never with -y / -a)
+# Tools run top to bottom. A group also needs:
+#   __can_<group>_check    fail if the group can't run here
+#   __can_<group>_load     fill CAN_COUNT / CAN_SIZE / CAN_BYTES [id]
+#                          (and CAN_LABEL[id] to override the label)
+#   __can_<group>_run <id> do the cleaning for one tool. To report what was
+#                          freed print either "can:freed=<bytes>" or docker's
+#                          "Total reclaimed space: 1.2GB" — it feeds `can stats`.
+#   __can_<group>_sub      (optional) dim subtitle for the menu
+#   __can_<group>_extra    (optional) extra lines for `can status`
+# The tool list may be built by load (the files group does). To add a group:
+# write those, then add it to __can_groups.
+
+__can_groups=(
+    "docker|Docker|containers, images, volumes, build cache"
+    "system|System|trash, old tmp files, caches"
+    "files|Files|your biggest files, you pick what goes"
+)
+
+__can_docker_tools=(
+    "containers|Stopped containers|1|0|run"
+    "networks|Unused networks|1|0|run"
+    "dangling|Dangling images|1|0|run"
+    "cache|Build cache|1|0|run"
+    "images|Unused images (all)|0|1|run"
+    "volumes|Unused volumes|0|1|run"
+)
+
+__can_system_tools=(
+    "trash|Trash|1|0|run"
+    "tmp|Old /tmp files (7d+)|1|0|run"
+    "npm|npm cache|1|0|run"
+    "usercache|User cache (~/.cache)|0|0|run"
+    "apt|apt cache (sudo)|0|0|run"
+)
+
+__can_files_tools=()      # one "manual" tool per file, built by __can_files_load
+
+declare -gA CAN_COUNT CAN_SIZE CAN_BYTES CAN_LABEL CAN_NOTE
+declare -ga CAN_LARGE_PATH CAN_LARGE_BYTES
+
+# ─── Shared helpers ───────────────────────────────────────────────────────────
+
+# Bytes -> "973.1MB" (prints nothing for 0)
+__can_hsize() {
+    local b=${1:-0}
+    (( b > 0 )) || return 0
+    numfmt --to=si --suffix=B --format=%.1f "$b" 2>/dev/null || echo "${b}B"
+}
+
+# "973.1MB" / "1.5kB" -> bytes
+__can_tobytes() {
+    awk -v s="$1" 'BEGIN {
+        match(s, /^[0-9.]+/); n = substr(s, RSTART, RLENGTH); u = substr(s, RLENGTH + 1)
+        m["B"] = 1; m["kB"] = 1e3; m["KB"] = 1e3; m["MB"] = 1e6
+        m["GB"] = 1e9; m["TB"] = 1e12; m["PB"] = 1e15
+        printf "%.0f", n * ((u in m) ? m[u] : 1)
+    }'
+}
+
+# Size in bytes of a directory (0 if missing)
+__can_dirsize() {
+    if [ -d "$1" ]; then du -sb "$1" 2>/dev/null | cut -f1; else echo 0; fi
+}
+
+# stdin: one number per line -> "count total"
+__can_sum() {
+    awk '{ s += $1; n++ } END { printf "%d %.0f\n", n, s }'
+}
+
+# __can_set <id> <bytes> [count]
+__can_set() {
+    if (( ${2:-0} > 0 )); then
+        CAN_BYTES[$1]=$2
+        CAN_SIZE[$1]=$(__can_hsize "$2")
+    fi
+    [ -n "$3" ] && CAN_COUNT[$1]=$3
+    return 0
+}
+
+# ─── Lifetime counter ─────────────────────────────────────────────────────────
+# ~/.can_stats:  total=<bytes>  runs=<n>  since=<date>
+
+__can_stats_file() { echo "${CAN_STATS_FILE:-$HOME/.can_stats}"; }
+
+__can_stats_get() {
+    local v; v=$(grep "^$1=" "$(__can_stats_file)" 2>/dev/null | cut -d= -f2-)
+    echo "${v:-$2}"
+}
+
+__can_stats_add() {
+    (( ${1:-0} > 0 )) || return 0
+    local f total runs since
+    f=$(__can_stats_file)
+    total=$(__can_stats_get total 0)
+    runs=$(__can_stats_get runs 0)
+    since=$(__can_stats_get since "$(date +%F)")
+    printf 'total=%.0f\nruns=%d\nsince=%s\n' "$((total + $1))" "$((runs + 1))" "$since" > "$f.tmp" \
+        && mv "$f.tmp" "$f"
+}
+
+__can_stats() {
+    if [ "$1" = reset ]; then
+        rm -f "$(__can_stats_file)"
+        echo "  stats reset."
+        return 0
+    fi
+    local total; total=$(__can_stats_get total 0)
+    printf '\n  %scan%s %s· stats%s\n\n' "$CAN_BOLD" "$CAN_RST" "$CAN_DIM" "$CAN_RST"
+    if (( total == 0 )); then
+        printf '  nothing freed yet.\n\n'
+        return 0
+    fi
+    printf '  freed so far   %s%s%s\n' "$CAN_GRN" "$(__can_hsize "$total")" "$CAN_RST"
+    printf '  cleanings      %s\n' "$(__can_stats_get runs 0)"
+    printf '  since          %s\n\n' "$(__can_stats_get since -)"
+}
+
+# ─── Group: docker ────────────────────────────────────────────────────────────
+
+__can_docker_check() {
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "can: docker not found" >&2
+        return 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        echo "can: docker daemon is not reachable (is it running?)" >&2
+        return 1
+    fi
+}
+
+__can_docker_load() {
+    CAN_COUNT=()
+    CAN_SIZE=()
+
+    local type size recl
+    while IFS='|' read -r type size recl; do
+        recl=${recl%% *}
+        case "$type" in
+            Containers)      CAN_SIZE[containers]=$recl ;;
+            Images)          CAN_SIZE[images]=$recl ;;
+            "Local Volumes") CAN_SIZE[volumes]=$recl ;;
+            "Build Cache")   CAN_SIZE[cache]=$recl ;;
+        esac
+    done < <(docker system df --format '{{.Type}}|{{.Size}}|{{.Reclaimable}}' 2>/dev/null)
+
+    CAN_COUNT[containers]=$(docker ps -aq -f status=exited -f status=created -f status=dead 2>/dev/null | wc -l)
+    CAN_COUNT[dangling]=$(docker images -q -f dangling=true 2>/dev/null | wc -l)
+    CAN_COUNT[volumes]=$(docker volume ls -q -f dangling=true 2>/dev/null | wc -l)
+
+    # A custom network is junk when no container is attached to it
+    local ids c n=0
+    ids=$(docker network ls -q -f type=custom 2>/dev/null)
+    if [ -n "$ids" ]; then
+        # shellcheck disable=SC2086
+        while read -r c; do
+            [ "$c" = "0" ] && n=$((n + 1))
+        done < <(docker network inspect -f '{{len .Containers}}' $ids 2>/dev/null)
+    fi
+    CAN_COUNT[networks]=$n
+}
+
+__can_docker_run() {
+    case "$1" in
+        containers) docker container prune -f ;;
+        networks)   docker network prune -f ;;
+        dangling)   docker image prune -f ;;
+        cache)      docker builder prune -f ;;
+        images)     docker image prune -af ;;
+        volumes)    docker volume prune -af ;;
+    esac
+}
+
+# ─── Group: system ────────────────────────────────────────────────────────────
+
+__can_trash_dir() { echo "${XDG_DATA_HOME:-$HOME/.local/share}/Trash"; }
+__can_cache_dir() { echo "${XDG_CACHE_HOME:-$HOME/.cache}"; }
+__can_tmp_dir()   { echo "${TMPDIR:-/tmp}"; }
+
+__can_system_check() { return 0; }
+
+__can_system_load() {
+    CAN_COUNT=()
+    CAN_SIZE=()
+    CAN_BYTES=()
+    local n b me; me=$(id -un)
+
+    __can_set trash "$(( $(__can_dirsize "$(__can_trash_dir)/files") + $(__can_dirsize "$(__can_trash_dir)/info") ))"
+    __can_set usercache "$(__can_dirsize "$(__can_cache_dir)")"
+    __can_set npm "$(__can_dirsize "$HOME/.npm/_cacache")"
+
+    read -r n b < <(find "$(__can_tmp_dir)" -xdev -user "$me" -type f -mtime +7 -printf '%s\n' 2>/dev/null | __can_sum)
+    __can_set tmp "$b" "$n"
+
+    read -r n b < <(find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -printf '%s\n' 2>/dev/null | __can_sum)
+    __can_set apt "$b" "$n"
+}
+
+# Wipe the contents of a directory, keep the directory itself
+__can_wipe() {
+    [ -d "$1" ] && find "$1" -mindepth 1 -delete 2>&1
+    return 0
+}
+
+__can_system_run() {
+    local me; me=$(id -un)
+    case "$1" in
+        trash)
+            __can_wipe "$(__can_trash_dir)/files"
+            __can_wipe "$(__can_trash_dir)/info"
+            ;;
+        tmp)
+            find "$(__can_tmp_dir)" -xdev -user "$me" -type f -mtime +7 -delete
+            find "$(__can_tmp_dir)" -xdev -mindepth 1 -user "$me" -type d -empty -mtime +7 -delete 2>/dev/null
+            ;;
+        npm)
+            if command -v npm >/dev/null 2>&1; then npm cache clean --force 2>&1
+            else __can_wipe "$HOME/.npm/_cacache"; fi
+            ;;
+        usercache) __can_wipe "$(__can_cache_dir)" ;;
+        apt)
+            command -v apt-get >/dev/null 2>&1 || { echo "apt-get not found"; return 1; }
+            sudo apt-get clean
+            ;;
+    esac
+    local rc=$?
+    [ $rc -eq 0 ] && [ -n "${CAN_BYTES[$1]}" ] && echo "can:freed=${CAN_BYTES[$1]}"
+    return $rc
+}
+
+# ─── Group: files ─────────────────────────────────────────────────────────────
+# Scans $HOME for big files and turns each one into a "manual" tool, so the
+# normal checklist shows them all with their sizes.
+
+__can_files_check() { return 0; }
+
+__can_files_sub() { echo "files > ${CAN_LARGE_MIN:-100M} under ~"; }
+
+__can_files_load() {
+    CAN_COUNT=()
+    CAN_SIZE=()
+    CAN_BYTES=()
+    CAN_LABEL=()
+    CAN_LARGE_PATH=()
+    CAN_LARGE_BYTES=()
+    __can_files_tools=()
+    CAN_FILES_N=0
+    CAN_FILES_B=0
+
+    local all sz p i tilde='~'
+    all=$(find "$HOME" -xdev -type f -size +"${CAN_LARGE_MIN:-100M}" -not -path '*/.git/*' \
+            -printf '%s\t%p\n' 2>/dev/null | sort -rn)
+    [ -n "$all" ] || return 0
+
+    read -r CAN_FILES_N CAN_FILES_B < <(cut -f1 <<<"$all" | __can_sum)
+    while IFS=$'\t' read -r sz p; do
+        CAN_LARGE_BYTES+=("$sz")
+        CAN_LARGE_PATH+=("$p")
+    done < <(head -n 50 <<<"$all")
+
+    for i in "${!CAN_LARGE_PATH[@]}"; do
+        CAN_BYTES[f$i]=${CAN_LARGE_BYTES[i]}
+        CAN_SIZE[f$i]=$(__can_hsize "${CAN_LARGE_BYTES[i]}")
+        CAN_LABEL[f$i]=${CAN_LARGE_PATH[i]/#$HOME/$tilde}
+        __can_files_tools+=("f$i||0|1|manual")
+    done
+}
+
+__can_files_run() {
+    local idx=${1#f}
+    rm -f -- "${CAN_LARGE_PATH[idx]}" || return 1
+    echo "can:freed=${CAN_BYTES[$1]}"
+}
+
+__can_files_extra() {
+    [ "${CAN_FILES_N:-0}" -gt 0 ] || return 0
+    printf '  %s%d file(s) over %s, %s in total%s\n' "$CAN_DIM" "$CAN_FILES_N" \
+        "${CAN_LARGE_MIN:-100M}" "$(__can_hsize "$CAN_FILES_B")" "$CAN_RST"
+    [ "$CAN_FILES_N" -gt 50 ] && printf '  %sshowing the 50 biggest%s\n' "$CAN_DIM" "$CAN_RST"
+    printf '\n'
+}
+
+# ─── UI helpers ───────────────────────────────────────────────────────────────
+
+__can_colors() {
+    if [ -t 1 ] && [ -z "$NO_COLOR" ]; then
+        CAN_BOLD=$'\e[1m'; CAN_DIM=$'\e[2m'; CAN_RED=$'\e[31m'
+        CAN_GRN=$'\e[32m'; CAN_YEL=$'\e[33m'; CAN_CYN=$'\e[36m'; CAN_RST=$'\e[0m'
+    else
+        CAN_BOLD=; CAN_DIM=; CAN_RED=; CAN_GRN=; CAN_YEL=; CAN_CYN=; CAN_RST=
+    fi
+}
+
+# Is there nothing to clean for this tool?
+__can_empty() {
+    local count=${CAN_COUNT[$1]} size=${CAN_SIZE[$1]}
+    if [ -n "$count" ]; then
+        [ "$count" = "0" ]
+    else
+        [ -z "$size" ] || [ "$size" = "0B" ]
+    fi
+}
+
+# "count  size" columns for one tool
+__can_cols() {
+    printf '%6s  %9s' "${CAN_COUNT[$1]:-·}" "${CAN_SIZE[$1]:-·}"
+}
+
+# __can_fit <text> <width>: pad, or cut from the left with an ellipsis
+__can_fit() {
+    if (( ${#1} > $2 )); then printf '…%s' "${1: -$(($2 - 1))}"
+    else printf '%-*s' "$2" "$1"; fi
+}
+
+# Width for a label column: the longest label, at least 22, at most the screen
+__can_labelw() {
+    local w=22 l cols
+    cols=$(tput cols 2>/dev/null || echo 80)
+    for l in "$@"; do (( ${#l} > w )) && w=${#l}; done
+    (( w > cols - 30 )) && w=$((cols - 30))
+    (( w < 12 )) && w=12
+    echo "$w"
+}
+
+__can_banner() {
+    local c=$CAN_CYN r=$CAN_RST total
+    printf '\n'
+    printf '%s       ▄▄▄▄▄      %s    ██████╗ █████╗ ███╗   ██╗\n' "$c" "$r"
+    printf '%s ▄▄▄▄▄███████▄▄▄▄▄%s   ██╔════╝██╔══██╗████╗  ██║\n' "$c" "$r"
+    printf '%s  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ %s   ██║     ███████║██╔██╗ ██║\n' "$c" "$r"
+    printf '%s  ▐█▌▐█▌▐█▌▐█▌▐█▌ %s   ██║     ██╔══██║██║╚██╗██║\n' "$c" "$r"
+    printf '%s  ▐█▌▐█▌▐█▌▐█▌▐█▌ %s   ╚██████╗██║  ██║██║ ╚████║\n' "$c" "$r"
+    printf '%s   ▀▀▀▀▀▀▀▀▀▀▀▀▀  %s    ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝\n' "$c" "$r"
+    printf '\n'
+    total=$(__can_stats_get total 0)
+    (( total > 0 )) && printf '  %s%s freed so far%s\n\n' "$CAN_GRN" "$(__can_hsize "$total")" "$CAN_RST"
+}
+
+__can_help() {
+    __can_banner
+    cat <<'EOF'
+  can: A tiny cleaner for junk data
+  -----------------------------------
+  Usage: can [group] [options]
+
+  Cleaning:
+    can                       Interactive: pick a group, then what to clean.
+    can docker                Jump straight into the docker group.
+    can system                Jump straight into the system group.
+    can files                 Jump straight into the files group.
+    can -y | --yes            Clean the safe defaults of every group, no questions.
+    can -y -a | --all         Clean everything, destructive items included.
+
+  Inspecting:
+    can status | ls           Show what is reclaimable, change nothing.
+    can files status          Same, for one group.
+    can stats                 Show how much space can has freed so far.
+    can stats reset           Zero the counter.
+
+  Groups:
+    docker                    Stopped containers, unused networks, dangling images,
+                              build cache, unused images (!), unused volumes (!).
+    system                    Trash, old /tmp files, npm cache, ~/.cache, apt cache.
+    files                     The 50 biggest files under ~, listed with their sizes.
+                              You pick which ones to delete; -y never touches them.
+
+  In interactive mode:
+    up/down or j/k  move      space  toggle     a  toggle all
+    enter           confirm   q / esc  quit
+
+    Items marked ! are destructive: off by default, and they ask before running.
+    Set CAN_LARGE_MIN (default 100M) to change the files threshold.
+
+    can help                  Show this help message.
+    can version               Show the version.
+EOF
+}
+
+# ─── Rendering ────────────────────────────────────────────────────────────────
+
+# __can_menu <title> <items-array-name> <multi|pick> <action-verb> [subtitle]
+# Fullscreen list. multi = checkboxes (sets CAN_PICKED to the checked ids),
+# pick = choose one (sets CAN_PICKED to the highlighted id on Enter).
+__can_menu() {
+    local title=$1 mode=$3 verb=$4 sub=$5
+    local -n __m_items=$2
+    local n=${#__m_items[@]} i cur=0 top=0 key rest all
+    local -a id label sel danger
+    local a b c d e
+
+    for ((i = 0; i < n; i++)); do
+        IFS='|' read -r a b c d e <<<"${__m_items[i]}"
+        id[i]=$a; label[i]=${CAN_LABEL[$a]:-$b}; sel[i]=$c; danger[i]=$d
+    done
+
+    # Layout: label column as wide as needed, but never wider than the screen
+    local rows w view
+    w=$(__can_labelw "${label[@]}")
+    [ "$mode" = multi ] || w=22
+    rows=$(tput lines 2>/dev/null || echo 24)
+    view=$((rows - 7)); (( view < 3 )) && view=3; (( view > n )) && view=$n
+
+    local total; total=$(__can_hsize "$(__can_stats_get total 0)")
+
+    CAN_PICKED=
+    local oldtrap; oldtrap=$(trap -p INT)
+    trap 'printf "\e[?25h\e[?1049l"; return 130' INT
+    printf '\e[?1049h\e[?25l'
+
+    while :; do
+        # ── draw ──
+        (( cur < top )) && top=$cur
+        (( cur >= top + view )) && top=$((cur - view + 1))
+        local buf=$'\e[H' picked=0 ptr box mark line
+        buf+="  ${CAN_BOLD}${title}${CAN_RST}"
+        [ -n "$sub" ] && buf+="  ${CAN_DIM}${sub}${CAN_RST}"
+        buf+=$'\e[K\n\e[K\n'
+        for ((i = 0; i < n; i++)); do [ "${sel[i]}" = "1" ] && picked=$((picked + 1)); done
+        for ((i = top; i < top + view; i++)); do
+            ptr="  "; [ $i -eq $cur ] && ptr="${CAN_CYN}›${CAN_RST} "
+            if [ "$mode" = multi ]; then
+                box="[ ]"; [ "${sel[i]}" = "1" ] && box="${CAN_GRN}[x]${CAN_RST}"
+                mark=" "; [ "${danger[i]}" = "1" ] && mark="${CAN_YEL}!${CAN_RST}"
+                line="$(__can_fit "${label[i]}" "$w") $(__can_cols "${id[i]}")"
+                if __can_empty "${id[i]}"; then line="${CAN_DIM}${line}${CAN_RST}"
+                elif [ $i -eq $cur ]; then line="${CAN_BOLD}${line}${CAN_RST}"; fi
+                buf+="  ${ptr}${box} ${mark} ${line}"$'\e[K\n'
+            else
+                line="$(__can_fit "${label[i]}" "$w")"
+                [ $i -eq $cur ] && line="${CAN_BOLD}${line}${CAN_RST}"
+                buf+="  ${ptr}${line}  ${CAN_DIM}${CAN_NOTE[${id[i]}]}${CAN_RST}"$'\e[K\n'
+            fi
+        done
+        buf+=$'\e[K\n'
+        if [ "$mode" = multi ]; then
+            line="${picked} selected"
+            (( n > view )) && line+="   $((cur + 1))/${n}"
+            buf+="  ${CAN_DIM}${line}   ${CAN_YEL}!${CAN_DIM} destructive${CAN_RST}"$'\e[K\n'
+            buf+="  ${CAN_DIM}↑/↓ move · space toggle · a all · enter ${verb} · q quit${CAN_RST}"$'\e[K\e[J'
+        else
+            [ -n "$total" ] && buf+="  ${CAN_GRN}${total}${CAN_DIM} freed so far${CAN_RST}"$'\e[K\n'
+            buf+="  ${CAN_DIM}↑/↓ move · enter ${verb} · q quit${CAN_RST}"$'\e[K\e[J'
+        fi
+        printf '%s' "$buf"
+
+        # ── input ──
+        IFS= read -rsn1 key || break
+        if [[ $key == $'\e' ]]; then
+            rest=
+            read -rsn2 -t 0.05 rest
+            [ -z "$rest" ] && break               # bare Esc
+            key+=$rest
+        fi
+        case "$key" in
+            $'\e[A'|k) cur=$(( (cur + n - 1) % n )) ;;
+            $'\e[B'|j) cur=$(( (cur + 1) % n )) ;;
+            ' ')       [ "$mode" = multi ] && sel[cur]=$(( 1 - sel[cur] )) ;;
+            a)         if [ "$mode" = multi ]; then
+                           all=1
+                           for ((i = 0; i < n; i++)); do [ "${sel[i]}" = "0" ] && all=0; done
+                           for ((i = 0; i < n; i++)); do sel[i]=$(( 1 - all )); done
+                       fi ;;
+            q)         break ;;
+            '')        if [ "$mode" = multi ]; then
+                           for ((i = 0; i < n; i++)); do
+                               [ "${sel[i]}" = "1" ] && CAN_PICKED+="${id[i]} "
+                           done
+                       else
+                           CAN_PICKED=${id[cur]}
+                       fi
+                       break ;;
+        esac
+    done
+
+    printf '\e[?25h\e[?1049l'
+    trap - INT
+    [ -n "$oldtrap" ] && eval "$oldtrap"
+    return 0
+}
+
+# ─── Commands ─────────────────────────────────────────────────────────────────
+
+__can_status() {
+    local group=$1
+    local -n tools="__can_${group}_tools"
+    local t id label def danger mode mark name w shown=0 max=15
+    local -a labels=()
+
+    for t in "${tools[@]}"; do
+        IFS='|' read -r id label def danger mode <<<"$t"
+        labels+=("${CAN_LABEL[$id]:-$label}")
+    done
+    w=$(__can_labelw "${labels[@]}")
+
+    printf '\n  %scan%s %s· %s%s\n\n' "$CAN_BOLD" "$CAN_RST" "$CAN_DIM" "$group" "$CAN_RST"
+    if [ ${#tools[@]} -eq 0 ]; then
+        printf '  %snothing found.%s\n\n' "$CAN_DIM" "$CAN_RST"
+    fi
+    for t in "${tools[@]}"; do
+        if (( shown >= max )); then
+            printf '    %s… and %d more%s\n' "$CAN_DIM" $(( ${#tools[@]} - max )) "$CAN_RST"
+            break
+        fi
+        shown=$((shown + 1))
+        IFS='|' read -r id label def danger mode <<<"$t"
+        name=$(__can_fit "${CAN_LABEL[$id]:-$label}" "$w")
+        mark=" "; [ "$danger" = "1" ] && mark="${CAN_YEL}!${CAN_RST}"
+        if __can_empty "$id"; then
+            printf '  %s %s%s %s%s\n' "$mark" "$CAN_DIM" "$name" "$(__can_cols "$id")" "$CAN_RST"
+        else
+            printf '  %s %s %s\n' "$mark" "$name" "$(__can_cols "$id")"
+        fi
+    done
+    printf '\n'
+    declare -F "__can_${group}_extra" >/dev/null && "__can_${group}_extra"
+}
+
+# __can_run <group> <id>...  — runs the given tools in registry order
+__can_run() {
+    local group=$1; shift
+    local -n tools="__can_${group}_tools"
+    local want=" $* " t id label def danger mode out rc rec bytes name w
+    local fails=0 freed=0 total
+    local -a labels=()
+
+    for t in "${tools[@]}"; do
+        IFS='|' read -r id label def danger mode <<<"$t"
+        [[ "$want" == *" $id "* ]] && labels+=("${CAN_LABEL[$id]:-$label}")
+    done
+    w=$(__can_labelw "${labels[@]}")
+
+    printf '\n  %s%s%s\n' "$CAN_DIM" "$group" "$CAN_RST"
+    for t in "${tools[@]}"; do
+        IFS='|' read -r id label def danger mode <<<"$t"
+        [[ "$want" == *" $id "* ]] || continue
+        name=$(__can_fit "${CAN_LABEL[$id]:-$label}" "$w")
+
+        out=$("__can_${group}_run" "$id" 2>&1); rc=$?
+
+        # What was freed: our own marker, or docker's "Total reclaimed space: X"
+        # (builder prune prints just "Total: X")
+        bytes=$(grep -o 'can:freed=[0-9]*' <<<"$out" | tail -n1 | cut -d= -f2)
+        if [ -z "$bytes" ]; then
+            rec=$(grep -iE '^Total( reclaimed space)?:' <<<"$out" | tail -n1 | sed -E 's/^[^:]*:[[:space:]]*//')
+            [ -n "$rec" ] && bytes=$(__can_tobytes "$rec")
+        fi
+
+        if [ $rc -eq 0 ]; then
+            rec=
+            if [ -n "$bytes" ]; then
+                freed=$((freed + bytes))
+                if (( bytes > 0 )); then rec="freed $(__can_hsize "$bytes")"; else rec="nothing to free"; fi
+            fi
+            printf '  %s✔%s %s %s%s%s\n' "$CAN_GRN" "$CAN_RST" "$name" "$CAN_DIM" "$rec" "$CAN_RST"
+        else
+            fails=$((fails + 1))
+            rec=$(grep -v 'can:freed=' <<<"$out" | head -n1)
+            printf '  %s✘%s %s %s%s%s\n' "$CAN_RED" "$CAN_RST" "$name" "$CAN_RED" "$rec" "$CAN_RST"
+        fi
+    done
+
+    printf '\n'
+    if (( freed > 0 )); then
+        __can_stats_add "$freed"
+        total=$(__can_stats_get total 0)
+        printf '  %sfreed %s%s%s now · %s in total%s\n\n' "$CAN_DIM" "$CAN_GRN" "$(__can_hsize "$freed")" \
+            "$CAN_DIM" "$(__can_hsize "$total")" "$CAN_RST"
+    fi
+    [ $fails -eq 0 ]
+}
+
+# __can_group <group> <yes> <all> <status>
+__can_group() {
+    local group=$1 yes=$2 all=$3 status=$4
+    "__can_${group}_check" || return 1
+
+    [ -t 1 ] && printf '  %sscanning…%s\r' "$CAN_DIM" "$CAN_RST"
+    "__can_${group}_load"
+    [ -t 1 ] && printf '\e[K'
+
+    if [ "$status" = 1 ]; then
+        __can_status "$group"
+        return 0
+    fi
+
+    local -n tools="__can_${group}_tools"
+    local t id label def danger mode picked= sub=
+
+    if [ ${#tools[@]} -eq 0 ]; then
+        echo "  $group: nothing to clean."
+        return 0
+    fi
+
+    if [ "$yes" = 1 ]; then
+        for t in "${tools[@]}"; do
+            IFS='|' read -r id label def danger mode <<<"$t"
+            [ "$mode" = manual ] && continue          # only ever picked by hand
+            if [ "$def" = "1" ] || [ "$all" = 1 ]; then picked+="$id "; fi
+        done
+    else
+        if [ ! -t 0 ] || [ ! -t 1 ]; then
+            echo "can: interactive mode needs a terminal (use 'can -y' or 'can status')" >&2
+            return 1
+        fi
+        declare -F "__can_${group}_sub" >/dev/null && sub=$("__can_${group}_sub")
+        __can_menu "can · $group" tools multi clean "$sub"
+        picked=$CAN_PICKED
+    fi
+
+    if [ -z "$picked" ]; then
+        echo "  nothing selected."
+        return 0
+    fi
+
+    # Destructive picks need an explicit yes (unless the user passed -y)
+    if [ "$yes" = 0 ]; then
+        local risky= nrisky=0
+        for t in "${tools[@]}"; do
+            IFS='|' read -r id label def danger mode <<<"$t"
+            if [[ " $picked " == *" $id "* && "$danger" == "1" ]]; then
+                risky+="${CAN_LABEL[$id]:-$label}, "
+                nrisky=$((nrisky + 1))
+            fi
+        done
+        if [ $nrisky -gt 0 ]; then
+            local ans
+            if [ $nrisky -gt 3 ]; then risky="$nrisky items, "; fi
+            printf '\n  %s!%s about to remove: %s\n' "$CAN_YEL" "$CAN_RST" "${risky%, }"
+            read -rp "  This can't be undone. Continue? [y/N] " ans
+            [[ "$ans" =~ ^[yY]$ ]] || { echo "  aborted."; return 1; }
+        fi
+    fi
+
+    __can_run "$group" $picked
+}
+
+# ─── Entry point ──────────────────────────────────────────────────────────────
+
+can() {
+    local yes=0 all=0 status=0 arg g rc=0 line
+    local -a groups=() ids=()
+
+    for line in "${__can_groups[@]}"; do ids+=("${line%%|*}"); done
+
+    for arg in "$@"; do
+        case "$arg" in
+            status|ls)      status=1 ;;
+            -y|--yes)       yes=1 ;;
+            -a|--all)       all=1 ;;
+            help|-h|--help) __can_colors; __can_help; return 0 ;;
+            version|-v|--version) echo "can $CAN_VERSION"; return 0 ;;
+            stats)          __can_colors; __can_stats "$2"; return 0 ;;
+            *)
+                if [[ " ${ids[*]} " == *" $arg "* ]]; then groups+=("$arg")
+                else echo "can: unknown argument '$arg' (try 'can help')" >&2; return 1; fi
+                ;;
+        esac
+    done
+
+    __can_colors
+
+    if [ ${#groups[@]} -eq 0 ]; then
+        if [ $status -eq 1 ] || [ $yes -eq 1 ]; then
+            groups=("${ids[@]}")
+        else
+            if [ ! -t 0 ] || [ ! -t 1 ]; then
+                echo "can: interactive mode needs a terminal (use 'can -y' or 'can status')" >&2
+                return 1
+            fi
+            local -a items=()
+            local gid glabel gdesc
+            for line in "${__can_groups[@]}"; do
+                IFS='|' read -r gid glabel gdesc <<<"$line"
+                items+=("$gid|$glabel|0|0|run")
+                CAN_NOTE[$gid]=$gdesc
+            done
+            __can_menu "can" items pick open
+            [ -n "$CAN_PICKED" ] && groups=("$CAN_PICKED")
+            [ ${#groups[@]} -eq 0 ] && return 0
+        fi
+    fi
+
+    for g in "${groups[@]}"; do
+        __can_group "$g" "$yes" "$all" "$status" || rc=1
+    done
+    return $rc
+}
+
+# Tab completion
+complete -W "docker system files status stats help version -y --yes -a --all" can
