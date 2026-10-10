@@ -14,8 +14,8 @@
     },
     {
       "name": "marry",
-      "version": "1.6.0",
-      "description": "Create branch, commit, push, and open PR — guided mode, diff browser, delegates PR to the pr extension; --kip for Kai"
+      "version": "1.6.1",
+      "description": "Create branch, commit, push, and open PR — guided mode, native diff browser, row actions, delegates PR to the pr extension; --kip for Kai"
     },
     {
       "name": "torch",

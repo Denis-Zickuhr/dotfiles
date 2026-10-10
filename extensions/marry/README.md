@@ -44,13 +44,17 @@ binary or `jq` needed.
 
 1. **What goes in the commit?** — the focus is the diff, and nothing is touched yet.
    Edit the **paths** (comma-separated; empty means all changes) and the **files**
-   table lists every changed file, marked ✓ when it goes in the commit, refreshing
-   as you type. Chips act on the selected file: **Show diff**, **Include** (force it
-   in), **Exclude** (keep it out; its change stays in the working tree) and
-   **Drop file** (discards the change, with a danger confirmation). Manual
-   include/exclude wins over the paths and is kept if you come back with Back.
+   table lists every changed file, with a badge **status** (added/modified/deleted…),
+   a badge **in commit / skipped** mark and the **path** in mono, refreshing as you
+   type. Each row carries its own actions: **Show diff** (opens the file's changes
+   in Kai's native diff view — unified or side by side, your choice, remembered),
+   **Include** (force it in), **Exclude** (keep it out; its change stays in the
+   working tree) and **Drop file** (discards the change, with a danger confirmation).
+   The **Review all changes** chip opens the full diff of everything going in.
+   Manual include/exclude wins over the paths and is kept if you come back with Back.
 2. **Branch and pull request** — a read-only table of the files that will be
-   committed, then branch name, commit message, PR title (empty = the commit
+   committed (badge status, mono path) followed by a **native diff** of exactly those
+   changes, then branch name, commit message, PR title (empty = the commit
    message), one field per `{{ask}}` question of the template, a **PR body** field (write
    the body yourself; when filled it replaces the template and its questions),
    labels, *draft*,
@@ -59,8 +63,10 @@ binary or `jq` needed.
    everything below.
 3. A checklist runs stash → sync → branch → restore → stage → commit → push → quiver → PR.
    Staging resets the index and adds exactly the files from the table.
-4. The PR is opened through `git pr` >= 2.1.0, or `gh` directly, and a result card
-   offers **Open the PR**. Cancelling any time before step 3 changes nothing.
+4. The PR is opened through `git pr` >= 2.1.0, or `gh` directly, and the result card
+   shows **stats** (files committed, branch, PR state), **kv** (branch, short commit,
+   pushed, PR link), the **commit message** as a copyable code block, and an
+   **Open the PR** action. Cancelling any time before step 3 changes nothing.
 
 Unlike the terminal flow, the PR template is read from `pr.template` first
 (`marry.template` is the fallback), matching `git pr`.

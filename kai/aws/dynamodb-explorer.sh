@@ -186,10 +186,13 @@ send_tables_prompt() {
 }
 
 # ---- table screen -----------------------------------------------------------------------------------------
-TABLE= KEYS='[]' KEYTYPES='{}' HASHKEY=
+TABLE= KEYS='[]' KEYTYPES='{}' HASHKEY= RANGEKEY=
 CURSORS=("")
 PAGE_IDX=0
 FILTER=
+PK=
+SK=
+SK_OP=eq
 NEXT_CURSOR=
 EVALUATED=0
 ITEMS='[]'
@@ -199,12 +202,40 @@ load_schema() {
     KEYS=$(jq -c '[.Table.KeySchema | sort_by(.KeyType == "RANGE")[] | .AttributeName]' <<<"$_out")
     KEYTYPES=$(jq -c '.Table.AttributeDefinitions | map({key: .AttributeName, value: .AttributeType}) | from_entries' <<<"$_out")
     HASHKEY=$(jq -r '.[0]' <<<"$KEYS")
+    RANGEKEY=$(jq -r 'if length > 1 then .[1] else "" end' <<<"$KEYS")
+}
+
+# Builds a DynamoDB typed value ({"S":...} / {"N":...}) for a key attribute, honoring its schema type.
+key_typed_value() { # attr-name raw-value
+    jq -nc --arg t "$(jq -r --arg k "$1" '.[$k] // "S"' <<<"$KEYTYPES")" --arg v "$2" \
+        'if $t == "N" then {N: $v} else {($t): $v} end'
 }
 
 # Evaluates PAGE items after the cursor of the current page, THEN filters (as DynamoDB does): a page can
-# show fewer items than were evaluated.
+# show fewer items than were evaluated. When PK is given, uses Query with a KeyConditionExpression over the
+# partition key (and optionally the sort key); otherwise falls back to Scan. The free-text FILTER is always
+# applied client-side over the evaluated items.
 load_page() {
-    local args=(scan --table-name "$TABLE" --limit "$PAGE" --no-paginate)
+    local args
+    if [ -n "$PK" ]; then
+        local kce="#pk = :pk" names values
+        names=$(jq -nc --arg pk "$HASHKEY" '{"#pk": $pk}')
+        values=$(key_typed_value "$HASHKEY" "$PK" | jq -c '{":pk": .}')
+        if [ -n "$SK" ] && [ -n "$RANGEKEY" ]; then
+            names=$(jq -c --arg sk "$RANGEKEY" '. + {"#sk": $sk}' <<<"$names")
+            values=$(jq -c --argjson v "$(key_typed_value "$RANGEKEY" "$SK")" '. + {":sk": $v}' <<<"$values")
+            case $SK_OP in
+                begins_with) kce="$kce AND begins_with(#sk, :sk)" ;;
+                *)           kce="$kce AND #sk = :sk" ;;
+            esac
+        fi
+        args=(query --table-name "$TABLE" --limit "$PAGE" --no-paginate
+            --key-condition-expression "$kce"
+            --expression-attribute-names "$names"
+            --expression-attribute-values "$values")
+    else
+        args=(scan --table-name "$TABLE" --limit "$PAGE" --no-paginate)
+    fi
     [ -n "${CURSORS[$PAGE_IDX]}" ] && args+=(--exclusive-start-key "${CURSORS[$PAGE_IDX]}")
     ddb _out "${args[@]}" || return 1
     NEXT_CURSOR=$(jq -c '.LastEvaluatedKey // empty' <<<"$_out")
@@ -214,9 +245,12 @@ load_page() {
 }
 
 rows_field_json() {
-    local info="Page $((PAGE_IDX + 1)) · $(jq length <<<"$ITEMS") shown of $EVALUATED evaluated"
-    if [ -n "$NEXT_CURSOR" ]; then info="$info · more available"; else info="$info · end of table"; fi
-    [ -n "$FILTER" ] && info="$info · the filter applies to the evaluated items of this page"
+    local mode="scan"
+    [ -n "$PK" ] && mode="query on $HASHKEY"
+    local info="Page $((PAGE_IDX + 1)) · $mode · $(jq length <<<"$ITEMS") shown of $EVALUATED evaluated"
+    if [ -n "$NEXT_CURSOR" ]; then info="$info · more available"; else info="$info · end of results"; fi
+    [ -n "$FILTER" ] && info="$info · the text filter applies to the evaluated items of this page"
+    [ -z "$PK" ] && [ -n "$SK" ] && info="$info · the sort key needs a partition key value to apply"
     jq -c --argjson keys "$KEYS" --arg t "$TABLE" --arg d "$info" "$JQ_LIB"'
         . as $items
         | ([$items[].plain | keys_unsorted[]]) as $all
@@ -247,12 +281,24 @@ chips_json() {
 }
 
 send_browse_prompt() {
-    emit "$(jq -nc --arg t "$TABLE" --arg f "$FILTER" --arg desc "$SUMMARY" --argjson rows "$(rows_field_json)" \
-        --argjson chips "$(chips_json)" '{
+    local pk_label="$HASHKEY (partition key)"
+    local sk_label="$RANGEKEY (sort key)"
+    emit "$(jq -nc --arg t "$TABLE" --arg f "$FILTER" --arg pk "$PK" --arg sk "$SK" --arg skop "$SK_OP" \
+        --arg hk "$HASHKEY" --arg rk "$RANGEKEY" --arg pklabel "$pk_label" --arg sklabel "$sk_label" \
+        --arg desc "$SUMMARY" --argjson rows "$(rows_field_json)" --argjson chips "$(chips_json)" '{
         kip: 1, type: "prompt", id: "browse", title: ("Table · " + $t), description: $desc, back: true, remember: false,
         submit_label: "Close", chips: $chips,
-        fields: [{name: "filter", type: "text", label: "Filter (text contained in the item)", watch: true,
-                  default: $f, placeholder: "e.g. shipped", remember: false}, $rows]}')"
+        fields: ([
+            {name: "pk", type: "text", label: $pklabel, watch: true, default: $pk,
+             placeholder: "exact value — empty scans the table", remember: false}]
+          + (if $rk == "" then [] else [
+            {name: "sk", type: "text", label: $sklabel, watch: true, default: $sk,
+             placeholder: "needs a partition key value", remember: false},
+            {name: "sk_op", type: "list", label: ($rk + " match"), watch: true, default: $skop, remember: false,
+             options: [{value: "eq", label: "equals"}, {value: "begins_with", label: "begins with"}]}
+          ] end)
+          + [{name: "filter", type: "text", label: "Text filter (contained in the item)", watch: true,
+              default: $f, placeholder: "e.g. shipped", remember: false}, $rows])}')"
 }
 
 # $1 = seq of the change being answered (empty = spontaneous patch, always applied)
@@ -453,6 +499,9 @@ browse_table() {
     CURSORS=("")
     PAGE_IDX=0
     FILTER=
+    PK=
+    SK=
+    SK_OP=eq
     if ! load_schema || ! load_page; then
         kip message error "Could not open $TABLE: ${AWS_ERR:-unknown error}"
         return 0
@@ -466,6 +515,9 @@ browse_table() {
                 # Every `change` must be answered with a patch that echoes its seq.
                 seq=$(jq -r '.seq' <<<"$KIP_MSG")
                 FILTER=$(jq -r '.values.filter // ""' <<<"$KIP_MSG")
+                PK=$(jq -r '.values.pk // ""' <<<"$KIP_MSG")
+                SK=$(jq -r '.values.sk // ""' <<<"$KIP_MSG")
+                SK_OP=$(jq -r '.values.sk_op // "eq"' <<<"$KIP_MSG")
                 CURSORS=("")
                 PAGE_IDX=0
                 if load_page; then

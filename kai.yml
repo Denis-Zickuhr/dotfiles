@@ -1,0 +1,205 @@
+commands:
+  - command: "cat README.md"
+    folder: "Sobre"
+    icon: "file-text"
+    name: "Ver README.md"
+    order: 12
+    type: "command"
+  - command: "for f in extensions/*/install; do echo \"==> $f\"; bash \"$f\"; done"
+    folder: "Instalar"
+    icon: "package-plus"
+    name: "Instalar extensions (todas)"
+    order: 14
+    type: "command"
+  - command: "bash \"extensions/{{EXTENSION}}/install\""
+    folder: "Instalar"
+    icon: "package"
+    name: "Instalar extension (uma)"
+    order: 15
+    params:
+      - label: "Extension (ctx, pr, marry, quiver, sync, shh, ...)"
+        name: "EXTENSION"
+        type: "text"
+    type: "command"
+  - command: "sed -i '\\|bashrc/nav|d' ~/.bashrc; echo 'source \"{{PROJECT_PATH}}/bashrc/nav\"' >> ~/.bashrc; echo 'nav reinstalado. Abra um novo terminal (ou: source ~/.bashrc).'"
+    folder: "Instalar"
+    icon: "terminal"
+    name: "Instalar nav (~/.bashrc)"
+    order: 16
+    type: "command"
+  - cli_path: "quiver"
+    command: "git quiver --kip"
+    folder: "Git/Extensions"
+    icon: "git-branch"
+    kip: true
+    kip_auto_close_delay_sec: 1
+    name: "Quiver"
+    order: 168
+    type: "command"
+  - cli_path: "marry"
+    command: "git marry --kip"
+    folder: "Git/Extensions"
+    icon: "git-pull-request"
+    kip: true
+    name: "Marry"
+    order: 169
+    type: "command"
+  - cli_path: "pr"
+    command: "git pr --kip"
+    folder: "Git/Extensions"
+    icon: "git-pull-request"
+    kip: true
+    kip_auto_close: true
+    kip_window: true
+    name: "pr"
+    order: 170
+    type: "command"
+  - cli_path: "ctx"
+    command: "git ctx"
+    folder: "Git/Extensions"
+    icon: "info"
+    name: "Contexto"
+    order: 171
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "cbn"
+    command: "git cbn"
+    folder: "Git/Extensions"
+    icon: "git-commit-horizontal"
+    name: "cbn — commit do nome da branch"
+    order: 172
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "wip"
+    command: "git wip"
+    folder: "Git/Extensions"
+    icon: "save"
+    name: "wip — commit rápido"
+    order: 173
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "shh"
+    command: "git shh"
+    folder: "Git/Extensions"
+    icon: "eye-off"
+    interactive_terminal: true
+    name: "shh — amend + force-push seguro"
+    order: 174
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "pinch"
+    command: "git pinch"
+    folder: "Git/Extensions"
+    icon: "pen"
+    name: "pinch — editar arquivos da branch"
+    order: 175
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "copen"
+    command: "git copen"
+    folder: "Git/Extensions"
+    icon: "file-search"
+    name: "Abrir arquivos modificados no editor"
+    order: 176
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "sync"
+    command: "git sync"
+    folder: "Git/Extensions"
+    icon: "refresh-cw"
+    interactive_terminal: true
+    name: "sync — sincronizar com upstream"
+    order: 177
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "fresh"
+    command: "git fresh"
+    folder: "Git/Extensions"
+    icon: "refresh-cw"
+    interactive_terminal: true
+    name: "Voltar a branch principal"
+    order: 178
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "rebirth"
+    command: "git rebirth --safe"
+    folder: "Git/Extensions"
+    icon: "refresh-ccw"
+    interactive_terminal: true
+    name: "Rebirth"
+    order: 179
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "torch"
+    command: "git torch --safe"
+    folder: "Git/Extensions"
+    icon: "flame"
+    interactive_terminal: true
+    name: "Limpar branches locais"
+    order: 180
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "standup"
+    command: "git standup"
+    folder: "Git/Extensions"
+    icon: "calendar-days"
+    name: "standup — commits recentes"
+    order: 181
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "hotfix"
+    command: "git hotfix -i \"{{INTO}}\""
+    folder: "Git/Extensions"
+    icon: "git-fork"
+    interactive_terminal: true
+    name: "hotfix — cherry-pick em branches"
+    order: 182
+    params:
+      - label: "Branches alvo (vírgula: develop,staging)"
+        name: "INTO"
+        type: "text"
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "split"
+    command: "git split \"{{BRANCH}}\""
+    folder: "Git/Extensions"
+    icon: "git-merge"
+    interactive_terminal: true
+    name: "split — 1 PR por commit"
+    order: 183
+    params:
+      - label: "Branch de origem"
+        name: "BRANCH"
+        type: "text"
+    terminal_target: "@parent"
+    type: "command"
+  - command: "git status --short"
+    folder: "Git"
+    icon: "files"
+    name: "Status"
+    terminal_target: "@parent"
+    type: "command"
+folders:
+  - icon: "info"
+    name: "Sobre"
+    order: 11
+    path: "Sobre"
+  - icon: "package"
+    name: "Instalar"
+    order: 13
+    path: "Instalar"
+  - cli_description: "Git extensions and everyday git commands"
+    cli_path: "git"
+    hidden: true
+    icon: "git-branch"
+    name: "Git"
+    order: 166
+    path: "Git"
+  - icon: "puzzle"
+    name: "Extensions"
+    order: 167
+    path: "Git/Extensions"
+kai_export:
+  id_free: true
+  scope: "folder"
+  version: 1
