@@ -77,5 +77,3 @@ ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
 git config --global alias.wip "!f() {
     bash -c '$ESCAPED_CODE' -- \"\$@\"
 }; f"
-
-echo "✔ git wip alias installed."
