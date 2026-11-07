@@ -1,31 +1,173 @@
 commands:
-  - command: "cat README.md"
-    folder: "Sobre"
-    icon: "file-text"
-    name: "Ver README.md"
-    order: 12
-    type: "command"
-  - command: "for f in extensions/*/install; do echo \"==> $f\"; bash \"$f\"; done"
-    folder: "Instalar"
+  - cli_path: "local-all"
+    command: "for f in \"{{PROJECT_PATH}}\"/extensions/*/install; do echo \"==> $f\"; bash \"$f\" || echo \"FALHOU: $f\"; done"
+    description: "Instala todas as extensions a partir deste clone."
+    folder: "Instalar/Local"
     icon: "package-plus"
-    name: "Instalar extensions (todas)"
-    order: 14
+    name: "Instalar todas as extensions"
+    order: 5
     type: "command"
-  - command: "bash \"extensions/{{EXTENSION}}/install\""
-    folder: "Instalar"
-    icon: "package"
-    name: "Instalar extension (uma)"
-    order: 15
+  - cli_path: "local"
+    command: "for e in $(echo \"{{EXTENSIONS}}\" | tr ',' ' '); do echo \"==> $e\"; bash \"{{PROJECT_PATH}}/extensions/$e/install\" || echo \"FALHOU: $e\"; done"
+    folder: "Instalar/Local"
+    icon: "package-check"
+    name: "Instalar extensions (seleção)"
+    order: 6
     params:
-      - label: "Extension (ctx, pr, marry, quiver, sync, shh, ...)"
-        name: "EXTENSION"
-        type: "text"
+      - label: "Extensions"
+        multi_select: true
+        name: "EXTENSIONS"
+        options:
+          - "ctx"
+          - "pinch"
+          - "marry"
+          - "torch"
+          - "rebirth"
+          - "cbn"
+          - "quiver"
+          - "hotfix"
+          - "copen"
+          - "fresh"
+          - "pr"
+          - "wip"
+          - "sync"
+          - "standup"
+          - "shh"
+          - "split"
+        required: true
+        type: "select"
     type: "command"
-  - command: "sed -i '\\|bashrc/nav|d' ~/.bashrc; echo 'source \"{{PROJECT_PATH}}/bashrc/nav\"' >> ~/.bashrc; echo 'nav reinstalado. Abra um novo terminal (ou: source ~/.bashrc).'"
-    folder: "Instalar"
+  - cli_path: "local-manager"
+    command: "bash \"{{PROJECT_PATH}}/installer\""
+    description: "Abre o gerenciador interativo a partir do clone."
+    folder: "Instalar/Local"
+    icon: "blocks"
+    interactive_terminal: true
+    name: "Instalar o gerenciador (git extension)"
+    order: 7
+    type: "command"
+  - cli_path: "local-nav"
+    command: "sed -i '\\|bashrc/nav|d' ~/.bashrc; echo 'source \"{{PROJECT_PATH}}/bashrc/nav\"' >> ~/.bashrc; echo \"nav instalado. Abra um novo terminal (ou: source ~/.bashrc).\""
+    folder: "Instalar/Local"
     icon: "terminal"
     name: "Instalar nav (~/.bashrc)"
+    order: 8
+    type: "command"
+  - cli_path: "local-can"
+    command: "sed -i '\\|bashrc/can|d' ~/.bashrc; echo 'source \"{{PROJECT_PATH}}/bashrc/can\"' >> ~/.bashrc; echo \"can instalado. Abra um novo terminal (ou: source ~/.bashrc).\""
+    folder: "Instalar/Local"
+    icon: "trash-2"
+    name: "Instalar can (~/.bashrc)"
+    order: 9
+    type: "command"
+  - cli_path: "net-manager"
+    command: "bash <(curl -fsSL https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/installer)"
+    folder: "Git"
+    icon: "cloud-download"
+    interactive_terminal: true
+    name: "Instalar o gerenciador (rede)"
+    order: 10
+    type: "command"
+  - cli_path: "net-all"
+    command: "curl -fsSL https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/extensions/registry.json | grep -oP '\"name\"\\s*:\\s*\"\\K[^\"]+' | while read -r e; do echo \"==> $e\"; curl -fsSL \"https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/extensions/$e/install\" | bash || echo \"FALHOU: $e\"; done"
+    folder: "Git"
+    icon: "cloud-download"
+    name: "Instalar todas as extensions (rede)"
+    order: 11
+    type: "command"
+  - cli_path: "net"
+    command: "for e in $(echo \"{{EXTENSIONS}}\" | tr ',' ' '); do echo \"==> $e\"; curl -fsSL \"https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/extensions/$e/install\" | bash || echo \"FALHOU: $e\"; done"
+    folder: "Git"
+    icon: "cloud-download"
+    name: "Instalar extensions (rede, seleção)"
+    order: 12
+    params:
+      - label: "Extensions"
+        multi_select: true
+        name: "EXTENSIONS"
+        options:
+          - "ctx"
+          - "pinch"
+          - "marry"
+          - "torch"
+          - "rebirth"
+          - "cbn"
+          - "quiver"
+          - "hotfix"
+          - "copen"
+          - "fresh"
+          - "pr"
+          - "wip"
+          - "sync"
+          - "standup"
+          - "shh"
+          - "split"
+        required: true
+        type: "select"
+    type: "command"
+  - cli_path: "net-nav"
+    command: "curl -fsSL https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/bashrc/nav -o ~/.nav.sh && sed -i '\\|source .*/\\.nav\\.sh|d' ~/.bashrc && echo 'source \"$HOME/.nav.sh\"' >> ~/.bashrc && echo \"nav instalado. Abra um novo terminal.\""
+    folder: "Git"
+    icon: "terminal"
+    name: "Instalar nav (rede)"
+    order: 13
+    type: "command"
+  - cli_path: "net-can"
+    command: "curl -fsSL https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/bashrc/can -o ~/.can.sh && sed -i '\\|source .*/\\.can\\.sh|d' ~/.bashrc && echo 'source \"$HOME/.can.sh\"' >> ~/.bashrc && echo \"can instalado. Abra um novo terminal.\""
+    folder: "Git"
+    icon: "trash-2"
+    name: "Instalar can (rede)"
+    order: 14
+    type: "command"
+  - cli_path: "manager"
+    command: "git extension"
+    folder: "Instalar/Gerenciar"
+    icon: "blocks"
+    interactive_terminal: true
+    name: "Gerenciador interativo"
+    order: 15
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "update"
+    command: "git extension update"
+    folder: "Instalar/Gerenciar"
+    icon: "refresh-cw"
+    name: "Atualizar extensions instaladas"
     order: 16
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "installed"
+    command: "git extension list"
+    folder: "Instalar/Gerenciar"
+    icon: "list-checks"
+    name: "Listar extensions instaladas"
+    order: 17
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "remove"
+    command: "git extension remove"
+    folder: "Instalar/Gerenciar"
+    icon: "package-x"
+    interactive_terminal: true
+    name: "Remover extensions"
+    order: 18
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "self-update"
+    command: "git extension self-update"
+    folder: "Instalar/Gerenciar"
+    icon: "download"
+    name: "Atualizar o gerenciador"
+    order: 19
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "aliases"
+    command: "git config --global --get-regexp '^alias\\.' | cut -d' ' -f1 | sed 's/^alias\\.//' | sort | tr '\\n' ' '; echo"
+    folder: "Instalar/Gerenciar"
+    icon: "git-branch"
+    name: "Aliases git instalados"
+    order: 20
+    terminal_target: "@parent"
     type: "command"
   - cli_path: "quiver"
     command: "git quiver --kip"
@@ -34,15 +176,15 @@ commands:
     kip: true
     kip_auto_close_delay_sec: 1
     name: "Quiver"
-    order: 168
+    order: 21
     type: "command"
   - cli_path: "marry"
     command: "git marry --kip"
     folder: "Git/Extensions"
-    icon: "git-pull-request"
+    icon: "git-merge"
     kip: true
     name: "Marry"
-    order: 169
+    order: 22
     type: "command"
   - cli_path: "pr"
     command: "git pr --kip"
@@ -51,15 +193,15 @@ commands:
     kip: true
     kip_auto_close: true
     kip_window: true
-    name: "pr"
-    order: 170
+    name: "PR"
+    order: 23
     type: "command"
   - cli_path: "ctx"
     command: "git ctx"
     folder: "Git/Extensions"
     icon: "info"
-    name: "Contexto"
-    order: 171
+    name: "Contexto da branch (ctx)"
+    order: 24
     terminal_target: "@parent"
     type: "command"
   - cli_path: "cbn"
@@ -67,7 +209,7 @@ commands:
     folder: "Git/Extensions"
     icon: "git-commit-horizontal"
     name: "cbn — commit do nome da branch"
-    order: 172
+    order: 25
     terminal_target: "@parent"
     type: "command"
   - cli_path: "wip"
@@ -75,7 +217,7 @@ commands:
     folder: "Git/Extensions"
     icon: "save"
     name: "wip — commit rápido"
-    order: 173
+    order: 26
     terminal_target: "@parent"
     type: "command"
   - cli_path: "shh"
@@ -84,7 +226,7 @@ commands:
     icon: "eye-off"
     interactive_terminal: true
     name: "shh — amend + force-push seguro"
-    order: 174
+    order: 27
     terminal_target: "@parent"
     type: "command"
   - cli_path: "pinch"
@@ -92,15 +234,15 @@ commands:
     folder: "Git/Extensions"
     icon: "pen"
     name: "pinch — editar arquivos da branch"
-    order: 175
+    order: 28
     terminal_target: "@parent"
     type: "command"
   - cli_path: "copen"
     command: "git copen"
     folder: "Git/Extensions"
     icon: "file-search"
-    name: "Abrir arquivos modificados no editor"
-    order: 176
+    name: "copen — abrir arquivos modificados"
+    order: 29
     terminal_target: "@parent"
     type: "command"
   - cli_path: "sync"
@@ -109,16 +251,16 @@ commands:
     icon: "refresh-cw"
     interactive_terminal: true
     name: "sync — sincronizar com upstream"
-    order: 177
+    order: 30
     terminal_target: "@parent"
     type: "command"
   - cli_path: "fresh"
     command: "git fresh"
     folder: "Git/Extensions"
-    icon: "refresh-cw"
+    icon: "house"
     interactive_terminal: true
-    name: "Voltar a branch principal"
-    order: 178
+    name: "fresh — voltar à branch principal"
+    order: 31
     terminal_target: "@parent"
     type: "command"
   - cli_path: "rebirth"
@@ -126,8 +268,8 @@ commands:
     folder: "Git/Extensions"
     icon: "refresh-ccw"
     interactive_terminal: true
-    name: "Rebirth"
-    order: 179
+    name: "rebirth — resetar para origin"
+    order: 32
     terminal_target: "@parent"
     type: "command"
   - cli_path: "torch"
@@ -135,8 +277,8 @@ commands:
     folder: "Git/Extensions"
     icon: "flame"
     interactive_terminal: true
-    name: "Limpar branches locais"
-    order: 180
+    name: "torch — limpar branches locais"
+    order: 33
     terminal_target: "@parent"
     type: "command"
   - cli_path: "standup"
@@ -144,7 +286,7 @@ commands:
     folder: "Git/Extensions"
     icon: "calendar-days"
     name: "standup — commits recentes"
-    order: 181
+    order: 34
     terminal_target: "@parent"
     type: "command"
   - cli_path: "hotfix"
@@ -153,51 +295,119 @@ commands:
     icon: "git-fork"
     interactive_terminal: true
     name: "hotfix — cherry-pick em branches"
-    order: 182
+    order: 35
     params:
       - label: "Branches alvo (vírgula: develop,staging)"
         name: "INTO"
+        required: true
         type: "text"
     terminal_target: "@parent"
     type: "command"
   - cli_path: "split"
     command: "git split \"{{BRANCH}}\""
     folder: "Git/Extensions"
-    icon: "git-merge"
+    icon: "scissors"
     interactive_terminal: true
     name: "split — 1 PR por commit"
-    order: 183
+    order: 36
     params:
       - label: "Branch de origem"
         name: "BRANCH"
+        required: true
         type: "text"
     terminal_target: "@parent"
     type: "command"
-  - command: "git status --short"
+  - cli_path: "status"
+    command: "git status --short --branch"
     folder: "Git"
     icon: "files"
     name: "Status"
+    order: 37
     terminal_target: "@parent"
     type: "command"
+  - cli_path: "log"
+    command: "git log --oneline --graph --decorate -n 25"
+    folder: "Git"
+    icon: "git-commit-horizontal"
+    name: "Log"
+    order: 38
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "branches"
+    command: "git branch --sort=-committerdate --format='%(committerdate:relative)\t%(refname:short)' | head -20"
+    folder: "Git"
+    icon: "git-branch"
+    name: "Branches"
+    order: 39
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "commit"
+    command: "git commit -am \"{{MSG}}\""
+    folder: "Git"
+    icon: "check"
+    name: "Commit"
+    order: 40
+    params:
+      - label: "Mensagem"
+        name: "MSG"
+        required: true
+        type: "text"
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "diff"
+    command: "git diff --stat"
+    folder: "Git"
+    icon: "file-diff"
+    name: "Diff"
+    order: 41
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "fetch"
+    command: "git fetch --all --prune"
+    folder: "Git"
+    icon: "cloud-download"
+    name: "Fetch + prune"
+    order: 42
+    terminal_target: "@parent"
+    type: "command"
+  - cli_path: "pull"
+    command: "git pull --ff-only"
+    folder: "Git"
+    icon: "download"
+    name: "Pull"
+    order: 43
+    terminal_target: "@parent"
+    type: "command"
+env_vars:
+  GH_BRANCH: "main"
+  GH_REPO: "dotfiles"
+  GH_USER: "Denis-Zickuhr"
 folders:
-  - icon: "info"
-    name: "Sobre"
-    order: 11
-    path: "Sobre"
   - icon: "package"
     name: "Instalar"
-    order: 13
+    order: 1
     path: "Instalar"
+  - icon: "laptop"
+    name: "Local"
+    order: 2
+    path: "Instalar/Local"
+  - icon: "globe"
+    name: "Rede"
+    order: 3
+    path: "Git"
+  - icon: "blocks"
+    name: "Gerenciar"
+    order: 4
+    path: "Instalar/Gerenciar"
   - cli_description: "Git extensions and everyday git commands"
     cli_path: "git"
-    hidden: true
     icon: "git-branch"
     name: "Git"
-    order: 166
+    order: 5
     path: "Git"
   - icon: "puzzle"
     name: "Extensions"
-    order: 167
+    order: 6
     path: "Git/Extensions"
 kai_export:
   id_free: true
