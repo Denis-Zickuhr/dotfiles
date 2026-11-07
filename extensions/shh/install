@@ -126,5 +126,3 @@ ESCAPED_CODE=$(echo "$SCRIPT_CONTENT" | sed "s/'/'\\\\''/g")
 git config --global alias.shh "!f() {
     bash -c '$ESCAPED_CODE' -- \"\$@\"
 }; f"
-
-echo "✔ git shh alias installed."
