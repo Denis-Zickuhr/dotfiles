@@ -1,4 +1,36 @@
 commands:
+  - command: "trackr {{task}} -t {{tag}} {% if {{desc}} %} -d \"{{desc}}\" {% endif %}"
+    folder: "Comandos"
+    icon: "calendar-clock"
+    interactive_terminal: true
+    name: "Timetracker"
+    params:
+      - label: "Atividade"
+        name: "task"
+        required: true
+        type: "text"
+      - label: "Tag"
+        name: "tag"
+        options:
+          - "Desenvolvimento"
+          - "Analise"
+          - "Apoio interno"
+          - "Apoio externo"
+          - "Reunião"
+          - "Teste"
+          - "Code Review"
+          - "Treinamento"
+          - "ADIs/pesquisas(“Feedz”)"
+          - "Gestão"
+          - "Documentação"
+          - "Ausência"
+        required: true
+        type: "select"
+      - label: "Descrição"
+        name: "desc"
+        type: "textarea"
+    terminal_target: "@parent"
+    type: "command"
   - cli_path: "local-all"
     command: "for f in \"{{PROJECT_PATH}}\"/extensions/*/install; do echo \"==> $f\"; bash \"$f\" || echo \"FALHOU: $f\"; done"
     description: "Instala todas as extensions a partir deste clone."
@@ -60,27 +92,36 @@ commands:
     name: "Instalar can (~/.bashrc)"
     order: 9
     type: "command"
+  - cli_path: "local-trackr"
+    command: "sed -i '\\|bashrc/trackr|d' ~/.bashrc; echo 'source \"{{PROJECT_PATH}}/bashrc/trackr\"' >> ~/.bashrc; echo \"trackr instalado. Abra um novo terminal (ou: source ~/.bashrc). Rode 'trackr --setup'.\""
+    description: "Instala o trackr (apontamento de tempo no Jira) sourçando no ~/.bashrc."
+    folder: "Instalar/Local"
+    icon: "timer"
+    interactive_terminal: true
+    name: "Instalar trackr (~/.bashrc)"
+    order: 10
+    type: "command"
   - cli_path: "net-manager"
     command: "bash <(curl -fsSL https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/installer)"
     folder: "Git"
     icon: "cloud-download"
     interactive_terminal: true
     name: "Instalar o gerenciador (rede)"
-    order: 10
+    order: 11
     type: "command"
   - cli_path: "net-all"
     command: "curl -fsSL https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/extensions/registry.json | grep -oP '\"name\"\\s*:\\s*\"\\K[^\"]+' | while read -r e; do echo \"==> $e\"; curl -fsSL \"https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/extensions/$e/install\" | bash || echo \"FALHOU: $e\"; done"
     folder: "Git"
     icon: "cloud-download"
     name: "Instalar todas as extensions (rede)"
-    order: 11
+    order: 12
     type: "command"
   - cli_path: "net"
     command: "for e in $(echo \"{{EXTENSIONS}}\" | tr ',' ' '); do echo \"==> $e\"; curl -fsSL \"https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/extensions/$e/install\" | bash || echo \"FALHOU: $e\"; done"
     folder: "Git"
     icon: "cloud-download"
     name: "Instalar extensions (rede, seleção)"
-    order: 12
+    order: 13
     params:
       - label: "Extensions"
         multi_select: true
@@ -110,14 +151,23 @@ commands:
     folder: "Git"
     icon: "terminal"
     name: "Instalar nav (rede)"
-    order: 13
+    order: 14
     type: "command"
   - cli_path: "net-can"
     command: "curl -fsSL https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/bashrc/can -o ~/.can.sh && sed -i '\\|source .*/\\.can\\.sh|d' ~/.bashrc && echo 'source \"$HOME/.can.sh\"' >> ~/.bashrc && echo \"can instalado. Abra um novo terminal.\""
     folder: "Git"
     icon: "trash-2"
     name: "Instalar can (rede)"
-    order: 14
+    order: 15
+    type: "command"
+  - cli_path: "net-trackr"
+    command: "curl -fsSL https://raw.githubusercontent.com/{{GH_USER}}/{{GH_REPO}}/{{GH_BRANCH}}/bashrc/trackr -o ~/.trackr.sh && sed -i '\\|source .*/\\.trackr\\.sh|d' ~/.bashrc && echo 'source \"$HOME/.trackr.sh\"' >> ~/.bashrc && echo \"trackr instalado. Abra um novo terminal. Rode 'trackr --setup'.\""
+    description: "Instala o trackr (apontamento de tempo no Jira) via rede, sourçando no ~/.bashrc."
+    folder: "Git"
+    icon: "timer"
+    interactive_terminal: true
+    name: "Instalar trackr (rede)"
+    order: 16
     type: "command"
   - cli_path: "manager"
     command: "git extension"
@@ -125,7 +175,7 @@ commands:
     icon: "blocks"
     interactive_terminal: true
     name: "Gerenciador interativo"
-    order: 15
+    order: 17
     terminal_target: "@parent"
     type: "command"
   - cli_path: "update"
@@ -133,7 +183,7 @@ commands:
     folder: "Instalar/Gerenciar"
     icon: "refresh-cw"
     name: "Atualizar extensions instaladas"
-    order: 16
+    order: 18
     terminal_target: "@parent"
     type: "command"
   - cli_path: "installed"
@@ -141,7 +191,7 @@ commands:
     folder: "Instalar/Gerenciar"
     icon: "list-checks"
     name: "Listar extensions instaladas"
-    order: 17
+    order: 19
     terminal_target: "@parent"
     type: "command"
   - cli_path: "remove"
@@ -150,7 +200,7 @@ commands:
     icon: "package-x"
     interactive_terminal: true
     name: "Remover extensions"
-    order: 18
+    order: 20
     terminal_target: "@parent"
     type: "command"
   - cli_path: "self-update"
@@ -158,7 +208,7 @@ commands:
     folder: "Instalar/Gerenciar"
     icon: "download"
     name: "Atualizar o gerenciador"
-    order: 19
+    order: 21
     terminal_target: "@parent"
     type: "command"
   - cli_path: "aliases"
@@ -166,7 +216,7 @@ commands:
     folder: "Instalar/Gerenciar"
     icon: "git-branch"
     name: "Aliases git instalados"
-    order: 20
+    order: 22
     terminal_target: "@parent"
     type: "command"
   - cli_path: "quiver"
@@ -176,7 +226,7 @@ commands:
     kip: true
     kip_auto_close_delay_sec: 1
     name: "Quiver"
-    order: 21
+    order: 23
     type: "command"
   - cli_path: "marry"
     command: "git marry --kip"
@@ -184,7 +234,7 @@ commands:
     icon: "git-merge"
     kip: true
     name: "Marry"
-    order: 22
+    order: 24
     type: "command"
   - cli_path: "pr"
     command: "git pr --kip"
@@ -194,14 +244,14 @@ commands:
     kip_auto_close: true
     kip_window: true
     name: "PR"
-    order: 23
+    order: 25
     type: "command"
   - cli_path: "ctx"
     command: "git ctx"
     folder: "Git/Extensions"
     icon: "info"
     name: "Contexto da branch (ctx)"
-    order: 24
+    order: 26
     terminal_target: "@parent"
     type: "command"
   - cli_path: "cbn"
@@ -209,7 +259,7 @@ commands:
     folder: "Git/Extensions"
     icon: "git-commit-horizontal"
     name: "cbn — commit do nome da branch"
-    order: 25
+    order: 27
     terminal_target: "@parent"
     type: "command"
   - cli_path: "wip"
@@ -217,7 +267,7 @@ commands:
     folder: "Git/Extensions"
     icon: "save"
     name: "wip — commit rápido"
-    order: 26
+    order: 28
     terminal_target: "@parent"
     type: "command"
   - cli_path: "shh"
@@ -226,7 +276,7 @@ commands:
     icon: "eye-off"
     interactive_terminal: true
     name: "shh — amend + force-push seguro"
-    order: 27
+    order: 29
     terminal_target: "@parent"
     type: "command"
   - cli_path: "pinch"
@@ -234,7 +284,7 @@ commands:
     folder: "Git/Extensions"
     icon: "pen"
     name: "pinch — editar arquivos da branch"
-    order: 28
+    order: 30
     terminal_target: "@parent"
     type: "command"
   - cli_path: "copen"
@@ -242,7 +292,7 @@ commands:
     folder: "Git/Extensions"
     icon: "file-search"
     name: "copen — abrir arquivos modificados"
-    order: 29
+    order: 31
     terminal_target: "@parent"
     type: "command"
   - cli_path: "sync"
@@ -251,7 +301,7 @@ commands:
     icon: "refresh-cw"
     interactive_terminal: true
     name: "sync — sincronizar com upstream"
-    order: 30
+    order: 32
     terminal_target: "@parent"
     type: "command"
   - cli_path: "fresh"
@@ -260,7 +310,7 @@ commands:
     icon: "house"
     interactive_terminal: true
     name: "fresh — voltar à branch principal"
-    order: 31
+    order: 33
     terminal_target: "@parent"
     type: "command"
   - cli_path: "rebirth"
@@ -269,7 +319,7 @@ commands:
     icon: "refresh-ccw"
     interactive_terminal: true
     name: "rebirth — resetar para origin"
-    order: 32
+    order: 34
     terminal_target: "@parent"
     type: "command"
   - cli_path: "torch"
@@ -278,7 +328,7 @@ commands:
     icon: "flame"
     interactive_terminal: true
     name: "torch — limpar branches locais"
-    order: 33
+    order: 35
     terminal_target: "@parent"
     type: "command"
   - cli_path: "standup"
@@ -286,7 +336,7 @@ commands:
     folder: "Git/Extensions"
     icon: "calendar-days"
     name: "standup — commits recentes"
-    order: 34
+    order: 36
     terminal_target: "@parent"
     type: "command"
   - cli_path: "hotfix"
@@ -295,7 +345,7 @@ commands:
     icon: "git-fork"
     interactive_terminal: true
     name: "hotfix — cherry-pick em branches"
-    order: 35
+    order: 37
     params:
       - label: "Branches alvo (vírgula: develop,staging)"
         name: "INTO"
@@ -309,7 +359,7 @@ commands:
     icon: "scissors"
     interactive_terminal: true
     name: "split — 1 PR por commit"
-    order: 36
+    order: 38
     params:
       - label: "Branch de origem"
         name: "BRANCH"
@@ -322,7 +372,7 @@ commands:
     folder: "Git"
     icon: "files"
     name: "Status"
-    order: 37
+    order: 39
     terminal_target: "@parent"
     type: "command"
   - cli_path: "log"
@@ -330,7 +380,7 @@ commands:
     folder: "Git"
     icon: "git-commit-horizontal"
     name: "Log"
-    order: 38
+    order: 40
     terminal_target: "@parent"
     type: "command"
   - cli_path: "branches"
@@ -338,7 +388,7 @@ commands:
     folder: "Git"
     icon: "git-branch"
     name: "Branches"
-    order: 39
+    order: 41
     terminal_target: "@parent"
     type: "command"
   - cli_path: "commit"
@@ -346,7 +396,7 @@ commands:
     folder: "Git"
     icon: "check"
     name: "Commit"
-    order: 40
+    order: 42
     params:
       - label: "Mensagem"
         name: "MSG"
@@ -359,7 +409,7 @@ commands:
     folder: "Git"
     icon: "file-diff"
     name: "Diff"
-    order: 41
+    order: 43
     terminal_target: "@parent"
     type: "command"
   - cli_path: "fetch"
@@ -367,7 +417,7 @@ commands:
     folder: "Git"
     icon: "cloud-download"
     name: "Fetch + prune"
-    order: 42
+    order: 44
     terminal_target: "@parent"
     type: "command"
   - cli_path: "pull"
@@ -375,7 +425,7 @@ commands:
     folder: "Git"
     icon: "download"
     name: "Pull"
-    order: 43
+    order: 45
     terminal_target: "@parent"
     type: "command"
 env_vars:
@@ -383,22 +433,6 @@ env_vars:
   GH_REPO: "dotfiles"
   GH_USER: "Denis-Zickuhr"
 folders:
-  - icon: "package"
-    name: "Instalar"
-    order: 1
-    path: "Instalar"
-  - icon: "laptop"
-    name: "Local"
-    order: 2
-    path: "Instalar/Local"
-  - icon: "globe"
-    name: "Rede"
-    order: 3
-    path: "Git"
-  - icon: "blocks"
-    name: "Gerenciar"
-    order: 4
-    path: "Instalar/Gerenciar"
   - cli_description: "Git extensions and everyday git commands"
     cli_path: "git"
     icon: "git-branch"
@@ -409,6 +443,22 @@ folders:
     name: "Extensions"
     order: 6
     path: "Git/Extensions"
+  - icon: "package"
+    name: "Instalar"
+    order: 1
+    path: "Instalar"
+  - icon: "blocks"
+    name: "Gerenciar"
+    order: 4
+    path: "Instalar/Gerenciar"
+  - icon: "laptop"
+    name: "Local"
+    order: 2
+    path: "Instalar/Local"
+  - icon: "terminal"
+    name: "Comandos"
+    path: "Comandos"
+    terminal_target: "@parent"
 kai_export:
   id_free: true
   scope: "folder"

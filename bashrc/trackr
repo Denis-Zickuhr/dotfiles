@@ -1,0 +1,384 @@
+#!/bin/bash
+# trackr - keep a live worklog running on a Jira ticket (Timetracker/everit API)
+# Source it from ~/.bashrc; it exposes a single `trackr` function.
+#
+#   trackr PROJ-123                 start tracking a ticket
+#   trackr .../browse/PROJ-123      same, from a full URL
+#   trackr PROJ-123 -d "fix" -t QA  with description and a tag
+#   trackr --list-tags              list available Timetracker tags
+#   trackr --setup                  re-run the interactive setup
+#   trackr --config                 show current config (tokens masked)
+#
+# While running, press Ctrl-C to stop and save the final duration.
+# Needs: bash, curl, jq. Config lives in ~/.config/trackr/config (chmod 600).
+
+TRACKR_VERSION="1.0.0"
+
+# ─── internals ────────────────────────────────────────────────────────────────
+
+__trackr_colors() {
+    if [[ -t 1 ]]; then
+        __TR_BOLD="\033[1m"; __TR_DIM="\033[2m"; __TR_NC="\033[0m"
+        __TR_GREEN="\033[32m"; __TR_YELLOW="\033[33m"; __TR_CYAN="\033[36m"
+        __TR_RED="\033[31m"; __TR_GRAY="\033[90m"; __TR_MAGENTA="\033[35m"
+    else
+        __TR_BOLD=""; __TR_DIM=""; __TR_NC=""; __TR_GREEN=""; __TR_YELLOW=""
+        __TR_CYAN=""; __TR_RED=""; __TR_GRAY=""; __TR_MAGENTA=""
+    fi
+}
+
+__trackr_cfg_dir()  { echo "${XDG_CONFIG_HOME:-$HOME/.config}/trackr"; }
+__trackr_cfg_file() { echo "$(__trackr_cfg_dir)/config"; }
+__trackr_base_url() { echo "${TT_BASE_URL:-https://jttp-cloud.everit.biz/timetracker/api/latest}"; }
+__trackr_tz()       { echo "${TRACKR_TZ:-$(date +%Z 2>/dev/null || echo UTC)}"; }
+
+__trackr_banner() {
+    echo -e "${__TR_BOLD}${__TR_CYAN}"
+    echo "  ┌──────────────────────────────────────┐"
+    echo "  │   trackr · live Jira time tracking   │"
+    echo "  └──────────────────────────────────────┘"
+    echo -e "${__TR_NC}${__TR_GRAY}  v$TRACKR_VERSION${__TR_NC}"
+    echo
+}
+
+__trackr_hr() { echo -e "${__TR_GRAY}  ────────────────────────────────────────────${__TR_NC}"; }
+
+__trackr_help() {
+    echo -e "${__TR_BOLD}${__TR_CYAN}trackr v$TRACKR_VERSION${__TR_NC} — live Jira worklog tracker"
+    echo
+    echo -e "${__TR_YELLOW}Usage:${__TR_NC}"
+    echo "  trackr <TICKET> [options]       Start tracking a ticket"
+    echo "  trackr --list-tags              List available Timetracker tags"
+    echo "  trackr --setup                  Re-run the interactive setup"
+    echo "  trackr --config                 Show current config (tokens masked)"
+    echo
+    echo -e "${__TR_YELLOW}Ticket:${__TR_NC} a key (PROJ-123) or a full URL (.../browse/PROJ-123)"
+    echo
+    echo -e "${__TR_YELLOW}Options:${__TR_NC}"
+    echo "  -d, --desc <text>     Worklog description"
+    echo "  -t, --tag <name>      Apply a tag/label by name (repeatable)"
+    echo "      --no-billable     Mark the worklog as non-billable"
+    echo "      --diag            Verbose (print HTTP calls)"
+    echo "  -h, --help            Show this help"
+    echo "  -v, --version         Show version"
+    echo
+    echo -e "${__TR_YELLOW}While running:${__TR_NC} press ${__TR_BOLD}Ctrl-C${__TR_NC} to stop and save the final duration."
+}
+
+__trackr_mask() {
+    local s="$1" n=${#1}
+    (( n <= 8 )) && { printf '••••'; return; }
+    printf '%s…%s' "${s:0:4}" "${s: -4}"
+}
+
+# loads config into caller-visible vars; returns 1 if incomplete
+__trackr_load_config() {
+    local f; f="$(__trackr_cfg_file)"
+    [[ -f "$f" ]] || return 1
+    # shellcheck disable=SC1090
+    source "$f"
+    [[ -n "${JIRA_BASE_URL:-}" && -n "${JIRA_EMAIL:-}" \
+       && -n "${JIRA_API_TOKEN:-}" && -n "${TIMETRACKER_API_KEY:-}" ]]
+}
+
+__trackr_ask() {
+    local prompt="$1" def="${2:-}" ans
+    if [[ -n "$def" ]]; then
+        read -r -p "$(echo -e "  ${__TR_CYAN}?${__TR_NC} ${prompt} ${__TR_GRAY}[${def}]${__TR_NC} ")" ans
+        echo "${ans:-$def}"
+    else
+        read -r -p "$(echo -e "  ${__TR_CYAN}?${__TR_NC} ${prompt} ")" ans
+        echo "$ans"
+    fi
+}
+
+__trackr_ask_secret() {
+    local prompt="$1" ans
+    read -r -s -p "$(echo -e "  ${__TR_CYAN}?${__TR_NC} ${prompt} ")" ans
+    echo >&2
+    echo "$ans"
+}
+
+# sets the four creds in the caller scope; returns 1 on cancel
+__trackr_setup() {
+    __trackr_banner
+    echo -e "  ${__TR_BOLD}First-time setup${__TR_NC} ${__TR_GRAY}(saved to $(__trackr_cfg_file | sed "s|$HOME|~|"))${__TR_NC}"
+    echo -e "  Values in ${__TR_BOLD}[brackets]${__TR_NC} are defaults — press Enter to accept."
+    echo
+
+    local base email jira_tok tt_tok
+    base="$(__trackr_ask 'Jira base URL' "${JIRA_BASE_URL:-https://your-org.atlassian.net}")"
+    base="${base%/}"
+    email="$(__trackr_ask 'Atlassian e-mail' "${JIRA_EMAIL:-}")"
+
+    echo
+    echo -e "  ${__TR_GRAY}Atlassian API token → https://id.atlassian.com/manage-profile/security/api-tokens${__TR_NC}"
+    jira_tok="$(__trackr_ask_secret 'Atlassian API token:')"
+
+    echo
+    echo -e "  ${__TR_GRAY}Timetracker API token → Timetracker ▸ My Preferences ▸ REST API ▸ +${__TR_NC}"
+    echo -e "  ${__TR_GRAY}(an admin must enable API token creation first)${__TR_NC}"
+    tt_tok="$(__trackr_ask_secret 'Timetracker API token:')"
+
+    if [[ -z "$base" || -z "$email" || -z "$jira_tok" || -z "$tt_tok" ]]; then
+        echo -e "  ${__TR_RED}✘${__TR_NC} all four values are required." >&2
+        return 1
+    fi
+
+    local dir; dir="$(__trackr_cfg_dir)"
+    mkdir -p "$dir"
+    ( umask 077
+      cat > "$(__trackr_cfg_file)" <<CFG
+# trackr config — keep this file private (chmod 600)
+JIRA_BASE_URL="$base"
+JIRA_EMAIL="$email"
+JIRA_API_TOKEN="$jira_tok"
+TIMETRACKER_API_KEY="$tt_tok"
+CFG
+    )
+    chmod 600 "$(__trackr_cfg_file)"
+    echo
+    echo -e "  ${__TR_GREEN}✔${__TR_NC} Saved."
+    JIRA_BASE_URL="$base"; JIRA_EMAIL="$email"
+    JIRA_API_TOKEN="$jira_tok"; TIMETRACKER_API_KEY="$tt_tok"
+}
+
+__trackr_show_config() {
+    __trackr_load_config || { echo -e "  ${__TR_RED}✘${__TR_NC} no config yet. Run ${__TR_BOLD}trackr --setup${__TR_NC}." >&2; return 1; }
+    __trackr_banner
+    echo -e "  ${__TR_BOLD}Jira base URL${__TR_NC}        ${JIRA_BASE_URL}"
+    echo -e "  ${__TR_BOLD}Atlassian e-mail${__TR_NC}     ${JIRA_EMAIL}"
+    echo -e "  ${__TR_BOLD}Atlassian token${__TR_NC}      $(__trackr_mask "$JIRA_API_TOKEN")"
+    echo -e "  ${__TR_BOLD}Timetracker token${__TR_NC}    $(__trackr_mask "$TIMETRACKER_API_KEY")"
+    echo -e "  ${__TR_GRAY}config: $(__trackr_cfg_file)${__TR_NC}"
+}
+
+# http: sets __TR_CODE / __TR_BODY
+__trackr_tt_call() {
+    local method="$1" path="$2" body="${3:-}"
+    local url; url="$(__trackr_base_url)${path}"
+    [[ "${__TR_DIAG:-0}" -eq 1 ]] && echo -e "  ${__TR_GRAY}> $method $url${__TR_NC}" >&2
+    [[ -n "$body" && "${__TR_DIAG:-0}" -eq 1 ]] && echo -e "  ${__TR_GRAY}> body: $body${__TR_NC}" >&2
+    local args=(-sS -X "$method" "$url"
+        -H "x-everit-api-key: ${TIMETRACKER_API_KEY}"
+        -H "x-requested-by: trackr"
+        -H "x-timezone: $(__trackr_tz)"
+        -H "Content-Type: application/json"
+        -w $'\n%{http_code}')
+    [[ -n "$body" ]] && args+=(--data "$body")
+    local raw; raw="$(curl "${args[@]}")"
+    __TR_CODE="${raw##*$'\n'}"; __TR_BODY="${raw%$'\n'*}"
+}
+
+# sets __TR_ISSUE_ID / __TR_ISSUE_SUMMARY; returns 1 on failure
+__trackr_jira_resolve() {
+    local key="$1"
+    local url="${JIRA_BASE_URL}/rest/api/3/issue/${key}?fields=summary"
+    [[ "${__TR_DIAG:-0}" -eq 1 ]] && echo -e "  ${__TR_GRAY}> GET $url${__TR_NC}" >&2
+    local raw code body
+    raw="$(curl -sS -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -H "Accept: application/json" -w $'\n%{http_code}' "$url")"
+    code="${raw##*$'\n'}"; body="${raw%$'\n'*}"
+    if [[ "$code" != "200" ]]; then
+        [[ "${__TR_DIAG:-0}" -eq 1 ]] && echo "$body" >&2
+        echo -e "  ${__TR_RED}✘${__TR_NC} Jira returned HTTP $code for ${__TR_BOLD}$key${__TR_NC} — check the ticket and your Atlassian credentials." >&2
+        return 1
+    fi
+    __TR_ISSUE_SUMMARY="$(printf '%s' "$body" | jq -r '.fields.summary // ""')"
+    __TR_ISSUE_ID="$(printf '%s' "$body" | jq -r '.id')"
+}
+
+# echoes the tags JSON; returns 1 on failure
+__trackr_fetch_tags() {
+    __trackr_tt_call GET /public/tag
+    if [[ "$__TR_CODE" != "200" ]]; then
+        echo "$__TR_BODY" >&2
+        echo -e "  ${__TR_RED}✘${__TR_NC} Timetracker HTTP $__TR_CODE listing tags." >&2
+        return 1
+    fi
+    printf '%s' "$__TR_BODY"
+}
+
+__trackr_list_tags() {
+    __trackr_load_config || { echo -e "  ${__TR_RED}✘${__TR_NC} no config yet. Run ${__TR_BOLD}trackr --setup${__TR_NC}." >&2; return 1; }
+    local json; json="$(__trackr_fetch_tags)" || return 1
+    __trackr_banner
+    echo -e "  ${__TR_BOLD}Available tags${__TR_NC}"
+    __trackr_hr
+    printf '%s' "$json" \
+      | jq -r '[.. | objects | select(.id!=null and .name!=null) | "\(.id)\t\(.name)"] | unique[]' \
+      | while IFS=$'\t' read -r id name; do
+            printf "  ${__TR_CYAN}%-6s${__TR_NC} %s\n" "$id" "$name"
+        done
+    __trackr_hr
+}
+
+__trackr_tag_id() {  # name tagsJson
+    printf '%s' "$2" | jq -r --arg n "$1" \
+      '[.. | objects | select(.id!=null and .name!=null) | select((.name|ascii_downcase)==($n|ascii_downcase))][0].id // empty'
+}
+
+__trackr_fmt_hms() {
+    local s="$1"; printf '%02d:%02d:%02d' "$((s/3600))" "$(((s%3600)/60))" "$((s%60))"
+}
+
+# ─── the public function ──────────────────────────────────────────────────────
+
+trackr() {
+    __trackr_colors
+
+    command -v curl >/dev/null 2>&1 || { echo -e "  ${__TR_RED}✘${__TR_NC} missing dependency: curl" >&2; return 1; }
+    command -v jq   >/dev/null 2>&1 || { echo -e "  ${__TR_RED}✘${__TR_NC} missing dependency: jq"   >&2; return 1; }
+
+    local action="track" desc="trackr session" billable="true" ticket_arg=""
+    local -a tag_names=()
+    __TR_DIAG=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)     __trackr_help; return 0 ;;
+            -v|--version)  echo "trackr v$TRACKR_VERSION"; return 0 ;;
+            --setup)       action="setup"; shift ;;
+            --config)      action="config"; shift ;;
+            --list-tags)   action="tags"; shift ;;
+            --diag)        __TR_DIAG=1; shift ;;
+            --no-billable) billable="false"; shift ;;
+            -d|--desc)     desc="${2:-}"; shift 2 ;;
+            -t|--tag)      tag_names+=("${2:-}"); shift 2 ;;
+            -*)            echo -e "  ${__TR_RED}✘${__TR_NC} unknown option: $1  ${__TR_GRAY}(trackr --help)${__TR_NC}" >&2; return 1 ;;
+            *)             ticket_arg="$1"; shift ;;
+        esac
+    done
+
+    case "$action" in
+        setup)  __trackr_setup; return $? ;;
+        config) __trackr_show_config; return $? ;;
+        tags)   __trackr_list_tags; return $? ;;
+    esac
+
+    if ! __trackr_load_config; then
+        echo -e "  ${__TR_YELLOW}No config found — let's set trackr up.${__TR_NC}"; echo
+        __trackr_setup || return 1
+        echo
+    fi
+
+    if [[ -z "$ticket_arg" ]]; then __trackr_help; return 1; fi
+
+    # parse ticket
+    local ticket_key
+    if [[ "$ticket_arg" =~ /browse/([A-Za-z][A-Za-z0-9_]+-[0-9]+) ]]; then
+        ticket_key="${BASH_REMATCH[1]^^}"
+    elif [[ "$ticket_arg" =~ ^([A-Za-z][A-Za-z0-9_]+-[0-9]+)$ ]]; then
+        ticket_key="${BASH_REMATCH[1]^^}"
+    else
+        echo -e "  ${__TR_RED}✘${__TR_NC} invalid ticket: '${ticket_arg}' — use a key like ${__TR_BOLD}PROJ-123${__TR_NC} or a /browse/ URL." >&2
+        return 1
+    fi
+
+    __trackr_banner
+    printf "  ${__TR_CYAN}•${__TR_NC} validating ${__TR_BOLD}%s${__TR_NC} in Jira..." "$ticket_key"
+    if ! __trackr_jira_resolve "$ticket_key"; then return 1; fi
+    printf "\r\033[K  ${__TR_GREEN}✔${__TR_NC} ${__TR_BOLD}%s${__TR_NC} ${__TR_GRAY}#%s${__TR_NC} — %s\n" \
+        "$ticket_key" "$__TR_ISSUE_ID" "${__TR_ISSUE_SUMMARY:-untitled}"
+
+    # resolve tags
+    local tag_ids="[]"
+    if ((${#tag_names[@]})); then
+        local tags_json; tags_json="$(__trackr_fetch_tags)" || return 1
+        local -a ids=(); local n id
+        for n in "${tag_names[@]}"; do
+            id="$(__trackr_tag_id "$n" "$tags_json")"
+            if [[ -z "$id" ]]; then
+                echo -e "  ${__TR_RED}✘${__TR_NC} tag ${__TR_BOLD}$n${__TR_NC} not found — run ${__TR_BOLD}trackr --list-tags${__TR_NC}." >&2
+                return 1
+            fi
+            ids+=("$id")
+            echo -e "  ${__TR_GREEN}✔${__TR_NC} tag ${__TR_CYAN}$n${__TR_NC} ${__TR_GRAY}→ #$id${__TR_NC}"
+        done
+        tag_ids="[$(IFS=,; echo "${ids[*]}")]"
+    fi
+
+    # create the worklog
+    local body
+    body="$(jq -cn \
+        --arg desc "$desc" --argjson dur 60 --argjson issue "$__TR_ISSUE_ID" \
+        --argjson billable "$billable" --arg wdate "$(date +%Y-%m-%d)" \
+        --arg wstart "$(date +%H:%M)" --argjson tags "$tag_ids" \
+        '{description:$desc, durationInSeconds:$dur, isBillable:$billable,
+          issueId:$issue, workDate:$wdate, workStartTime:$wstart,
+          worklogTagIds:$tags}')"
+    printf "  ${__TR_CYAN}•${__TR_NC} opening worklog..."
+    __trackr_tt_call POST /public/worklog "$body"
+    if [[ "$__TR_CODE" != "200" && "$__TR_CODE" != "201" ]]; then
+        printf "\r\033[K"
+        echo -e "  ${__TR_GRAY}${__TR_BODY}${__TR_NC}" >&2
+        echo -e "  ${__TR_RED}✘${__TR_NC} could not create worklog (HTTP $__TR_CODE)." >&2
+        return 1
+    fi
+    local worklog_id; worklog_id="$(printf '%s' "$__TR_BODY" | jq -r '.worklogId // .id // empty')"
+    if [[ -z "$worklog_id" ]]; then
+        printf "\r\033[K"; echo -e "  ${__TR_RED}✘${__TR_NC} no worklogId in response: $__TR_BODY" >&2; return 1
+    fi
+    printf "\r\033[K  ${__TR_GREEN}✔${__TR_NC} worklog ${__TR_GRAY}#%s${__TR_NC} open — tracking started\n" "$worklog_id"
+    __trackr_hr
+
+    # live loop
+    local start_epoch; start_epoch="$(date +%s)"
+    local poll="${TRACKR_POLL:-60}"
+    local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    local i=0 last_sync now elapsed since next frame
+
+    __TR_STOP=0
+    __TR_DONE=0
+
+    # patch helper (closure over worklog_id)
+    __trackr_patch() {
+        local dur="$1" pb
+        pb="$(jq -cn --argjson id "$worklog_id" --argjson dur "$dur" \
+            '{worklogId:$id, partialWorklog:{durationInSeconds:$dur}}')"
+        __trackr_tt_call PATCH /public/worklog "$pb"
+        [[ "$__TR_CODE" == "200" ]] || return 1
+        local e; e="$(printf '%s' "$__TR_BODY" | jq -r '.error // empty')"
+        [[ -z "$e" || "$e" == "null" ]]
+    }
+
+    # finalize: save the final duration and report. Runs once (normal exit or Ctrl-C).
+    __trackr_finish() {
+        [[ "$__TR_DONE" -eq 1 ]] && return
+        __TR_DONE=1
+        printf "\r\033[K\n"
+        local fin; fin=$(( $(date +%s) - start_epoch )); (( fin < 60 )) && fin=60
+        if __trackr_patch "$fin"; then
+            echo -e "  ${__TR_GREEN}✔${__TR_NC} Saved ${__TR_BOLD}$(__trackr_fmt_hms "$fin")${__TR_NC} to ${__TR_CYAN}${ticket_key}${__TR_NC} ${__TR_GRAY}(worklog #${worklog_id})${__TR_NC}"
+        else
+            echo -e "  ${__TR_RED}✘${__TR_NC} Could not save the final duration (worklog #${worklog_id})." >&2
+        fi
+    }
+
+    # install our INT handler (just flags; finalize happens in the loop)
+    local old_int; old_int="$(trap -p INT)"
+    trap '__TR_STOP=1' INT
+
+    last_sync="$start_epoch"
+    while [[ "$__TR_STOP" -eq 0 ]]; do
+        now="$(date +%s)"
+        elapsed=$(( now - start_epoch ))
+        since=$(( now - last_sync ))
+        next=$(( poll - since )); (( next < 0 )) && next=0
+        frame="${spin:$((i % ${#spin})):1}"
+        printf "\r\033[K  ${__TR_MAGENTA}%s${__TR_NC}  ${__TR_BOLD}%s${__TR_NC}  ${__TR_GRAY}%s${__TR_NC}   ${__TR_DIM}next sync in %2ds · Ctrl-C to stop${__TR_NC}" \
+            "$frame" "$(__trackr_fmt_hms "$elapsed")" "$ticket_key" "$next"
+        if (( since >= poll )); then
+            __trackr_patch "$elapsed" && last_sync="$now"
+        fi
+        i=$((i+1))
+        # interruptible pause: read returns non-zero on timeout or on SIGINT,
+        # and (unlike sleep) a Ctrl-C here won't abort the function.
+        read -rt 0.1 -n 1 _discard 2>/dev/null || true
+    done
+
+    # restore previous INT trap (or clear ours)
+    if [[ -n "$old_int" ]]; then eval "$old_int"; else trap - INT; fi
+
+    __trackr_finish
+    unset -f __trackr_patch __trackr_finish 2>/dev/null
+}
